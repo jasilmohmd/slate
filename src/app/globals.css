@@ -2,9 +2,19 @@
 
 :root {
   color-scheme: dark;
+  --stone: #2e3a38;
+  --stone-deep: #1f2927;
+  --chalk: #ede8dc;
+  --chalk-dim: #a8a79c;
+  --frame: #8b6b47;
+  --chalk-green: #a3c48f;
+  --chalk-rose: #d99a93;
 }
 
 body {
   margin: 0;
+  background: var(--stone);
+  color: var(--chalk);
+  font-family: var(--font-manjari), "Noto Sans Malayalam", sans-serif;
 }
 

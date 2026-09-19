@@ -61,3 +61,41 @@
   avoid manual-transcription errors; round-trip-verified byte-for-byte
   against the source file before committing.
 
+## Step 3 — generation core
+
+- Added the three §5a stack dependencies not yet installed
+  (`@supabase/supabase-js`, `sharp`, `zod`) — nothing beyond them. Kept
+  using raw `fetch` to the OpenAI endpoint (as in the step-2 script)
+  instead of an `openai` SDK dependency.
+- Model default is **Sol** (`gpt-5.6-sol`), not Terra, as an interim
+  choice — §5b's Terra-vs-Sol decision explicitly requires measuring first-
+  pass Tier 1 success over 10 generations, and Tier 1 doesn't exist until
+  step 4. Defaulting to Sol now matches §5b's own fallback branch ("<70% →
+  Sol default throughout") and avoids blocking step 3 on a step-4
+  dependency. Revisit once Tier 1 exists.
+- One Sol call handles both vision extraction and generation when a photo
+  is attached (multimodal message: text contract + image_url), rather than
+  two separate calls — §5b assigns both jobs to Sol anyway, so splitting
+  them would only add latency and cost.
+- `storage.objects` has RLS on by default and this build defines no
+  policies for it (spec: no RLS, no auth), so photo uploads use the
+  Supabase **service role key** server-side, never the anon key. The
+  `generations` table itself has RLS off entirely, so the same server
+  client just uses one set of credentials for both.
+- The generation UI restricts the class selector to 8–10 (Band B only) —
+  Bands A and C are cut from this build (§6), so the dropdown doesn't offer
+  choices the backend would reject.
+- Streaming uses a custom newline-delimited-JSON protocol over the
+  route's `Response` body, not SSE — see PROMPTS.md for the exact message
+  shapes. This is what makes the builder UI's live "streaming artifact
+  source" panel work and is also the mechanism the demo plan (§6) relies on
+  ("stream it so the wait is watchable").
+- Incident: `.env.local` got corrupted mid-step when a value was pasted
+  without a newline, merging two `KEY=value` lines into one and making
+  `OPENAI_API_KEY`'s loaded value silently wrong (still a 401, but a
+  confusing one — the masked key in the error tail matched the *next*
+  line's value, e.g. ending in "...supabase.co"). Diagnosed by checking
+  byte offsets of `=`/CR/LF in the file rather than printing its content.
+  Takeaway: when a `.env` value stops working right after an edit, suspect
+  a missing newline before re-checking the credential itself.
+

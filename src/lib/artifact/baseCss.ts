@@ -97,6 +97,7 @@ body {
 @media (orientation: landscape) {
   [data-role="artifact"] {
     flex-direction: row;
+    align-items: flex-start;
   }
   [data-role="scene"] {
     flex: 1 1 60%;

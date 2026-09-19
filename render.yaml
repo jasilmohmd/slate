@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: slate
+    runtime: node
+    plan: free
+    buildCommand: corepack pnpm build
+    startCommand: corepack pnpm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.21.0

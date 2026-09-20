@@ -3,11 +3,10 @@ import sharp from "sharp";
 import { bandFromClass } from "@/lib/band";
 import { buildGenerationPrompt, buildRepairPrompt } from "@/lib/artifact/generationPrompt";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { chooseModel } from "@/lib/models/router";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const GENERATION_MODEL = "gpt-5.6-sol";
 
 const RequestSchema = z.object({
   goal: z.string().trim().min(3, "Say a bit more about what you're teaching.").max(2000),
@@ -91,6 +90,13 @@ export async function POST(request: Request) {
         hasImage: photoBuffer !== null,
       });
 
+  // A photo rides on the same call that generates the artifact, so that
+  // call IS the vision call and must route as one (§5b: never Luna for
+  // vision). This matters the moment the generation default is not Sol.
+  const model = photoBuffer
+    ? chooseModel("vision")
+    : chooseModel(isRepair ? "repair" : "generate");
+
   const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
   if (photoBuffer) {
     content.push({
@@ -110,7 +116,7 @@ export async function POST(request: Request) {
             Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify({
-            model: GENERATION_MODEL,
+            model,
             stream: true,
             messages: [{ role: "user", content }],
           }),

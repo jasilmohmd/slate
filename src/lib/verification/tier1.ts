@@ -198,18 +198,65 @@ function checkOverflow(doc: Document): CheckResult {
   };
 }
 
+// §2a: "Reframe, never squash." A container aspect BELOW the scene's
+// declared data-min-aspect is not a defect — it is precisely the condition
+// that is supposed to trigger reframing, and it happens on every phone in
+// portrait. What is checkable, and what the spec actually forbids, is the
+// scene being COMPRESSED: the rendered SVG no longer matching its own
+// viewBox ratio. data-min-aspect stays part of the §2d contract (its
+// presence is checked in checkStructure) and drives the artifact's own
+// reframe logic; Tier 1 does not assert against it.
 function checkSceneAspect(doc: Document): CheckResult {
   const scene = doc.querySelector('[data-role="scene"]') as HTMLElement | null;
   if (!scene) return { id: "scene-aspect", label: "scene aspect", passed: false, detail: "scene not found" };
-  const minAspect = Number(scene.getAttribute("data-min-aspect"));
-  const rect = scene.getBoundingClientRect();
-  const actual = rect.height > 0 ? rect.width / rect.height : 0;
-  const passed = !Number.isFinite(minAspect) || actual >= minAspect - 0.05;
+
+  const problems: string[] = [];
+  const declaredIntrinsic = Number(scene.getAttribute("data-intrinsic-aspect"));
+  const svgs = [...scene.querySelectorAll("svg")];
+  let checked = 0;
+
+  for (const svg of svgs) {
+    const viewBox = svg.getAttribute("viewBox");
+    if (!viewBox) continue;
+    const parts = viewBox.trim().split(/[s,]+/).map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) continue;
+    const [, , vbWidth, vbHeight] = parts;
+    if (vbWidth <= 0 || vbHeight <= 0) continue;
+
+    const rect = svg.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+
+    const intrinsic = vbWidth / vbHeight;
+    const rendered = rect.width / rect.height;
+    checked++;
+
+    // 5% tolerance absorbs sub-pixel layout rounding without letting a
+    // genuinely squashed scene through.
+    if (Math.abs(rendered / intrinsic - 1) > 0.05) {
+      problems.push(
+        `svg rendered ${rendered.toFixed(2)} vs viewBox ${intrinsic.toFixed(2)} (squashed)`
+      );
+    }
+
+    // §2d requires the declared intrinsic aspect to match the SVG it
+    // describes; a wrong value misinforms the artifact's own reframe logic.
+    if (
+      checked === 1 &&
+      Number.isFinite(declaredIntrinsic) &&
+      declaredIntrinsic > 0 &&
+      Math.abs(declaredIntrinsic / intrinsic - 1) > 0.05
+    ) {
+      problems.push(
+        `data-intrinsic-aspect ${declaredIntrinsic} does not match viewBox ${intrinsic.toFixed(2)}`
+      );
+    }
+  }
+
   return {
     id: "scene-aspect",
     label: "scene aspect",
-    passed,
-    detail: passed ? undefined : `actual ${actual.toFixed(2)} < declared min ${minAspect}`,
+    passed: problems.length === 0,
+    detail: problems.join("; ") || (checked === 0 ? "no measurable SVG scene" : undefined),
   };
 }
 

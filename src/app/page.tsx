@@ -1,11 +1,74 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { runTier1, type CheckResult } from "@/lib/verification/tier1";
 
-type Status = "idle" | "generating" | "done" | "error";
+type Status = "idle" | "generating" | "verifying" | "repairing" | "done" | "failed" | "error";
 type PreviewMode = "phone" | "projector";
 
 const CLASS_OPTIONS = [8, 9, 10];
+const MAX_REPAIRS = 3;
+
+async function callGenerate(params: {
+  goal: string;
+  classNumber: number;
+  language: "ml" | "en";
+  photo: File | null;
+  previousHtml?: string;
+  failureSummary?: string;
+  generationId?: string;
+  onDelta: (text: string) => void;
+}): Promise<{ id: string; html: string; photoPath: string | null }> {
+  const formData = new FormData();
+  formData.set("goal", params.goal);
+  formData.set("classNumber", String(params.classNumber));
+  formData.set("language", params.language);
+  if (params.photo) formData.set("photo", params.photo);
+  if (params.previousHtml) formData.set("previousHtml", params.previousHtml);
+  if (params.failureSummary) formData.set("failureSummary", params.failureSummary);
+  if (params.generationId) formData.set("generationId", params.generationId);
+
+  const res = await fetch("/api/generate", { method: "POST", body: formData });
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Request failed (${res.status})`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: { id: string; html: string; photoPath: string | null } | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      if (msg.type === "delta") {
+        params.onDelta(msg.text);
+      } else if (msg.type === "done") {
+        result = { id: msg.id, html: msg.html, photoPath: msg.photoPath ?? null };
+      } else if (msg.type === "error") {
+        throw new Error(msg.message);
+      }
+    }
+  }
+
+  if (!result) throw new Error("Generation stream ended without a result");
+  return result;
+}
+
+function buildFailureSummary(checks: CheckResult[]): string {
+  return checks
+    .filter((c) => !c.passed)
+    .map((c) => `- ${c.label}: ${c.detail ?? "failed"}`)
+    .join("\n");
+}
 
 export default function Home() {
   const [goal, setGoal] = useState("");
@@ -14,6 +77,8 @@ export default function Home() {
   const [photo, setPhoto] = useState<File | null>(null);
   const [status, setStatus] = useState<Status>("idle");
   const [streamedText, setStreamedText] = useState("");
+  const [checks, setChecks] = useState<CheckResult[]>([]);
+  const [attempt, setAttempt] = useState(0);
   const [finalHtml, setFinalHtml] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [generationId, setGenerationId] = useState<string | null>(null);
@@ -22,52 +87,74 @@ export default function Home() {
 
   async function handleGenerate(e: React.FormEvent) {
     e.preventDefault();
-    if (status === "generating") return;
+    if (status === "generating" || status === "verifying" || status === "repairing") return;
 
-    setStatus("generating");
     setStreamedText("");
+    setChecks([]);
     setFinalHtml(null);
     setErrorMessage(null);
     setGenerationId(null);
-
-    const formData = new FormData();
-    formData.set("goal", goal);
-    formData.set("classNumber", String(classNumber));
-    formData.set("language", language);
-    if (photo) formData.set("photo", photo);
+    setAttempt(0);
 
     try {
-      const res = await fetch("/api/generate", { method: "POST", body: formData });
-      if (!res.ok || !res.body) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `Request failed (${res.status})`);
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      let html = "";
+      let id: string | undefined;
+      let photoPath: string | null = null;
+      let previousHtml: string | undefined;
+      let failureSummary: string | undefined;
+      let passed = false;
+      let attemptNumber = 0;
 
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
+        setStatus(attemptNumber === 0 ? "generating" : "repairing");
+        setStreamedText("");
+        const result = await callGenerate({
+          goal,
+          classNumber,
+          language,
+          photo,
+          previousHtml,
+          failureSummary,
+          generationId: id,
+          onDelta: (text) => setStreamedText((prev) => prev + text),
+        });
+        html = result.html;
+        id = result.id;
+        if (result.photoPath) photoPath = result.photoPath;
+        setGenerationId(id);
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const msg = JSON.parse(line);
-          if (msg.type === "delta") {
-            setStreamedText((prev) => prev + msg.text);
-          } else if (msg.type === "done") {
-            setFinalHtml(msg.html);
-            setGenerationId(msg.id);
-            setStatus("done");
-          } else if (msg.type === "error") {
-            throw new Error(msg.message);
-          }
+        setStatus("verifying");
+        setChecks([]);
+        const verification = await runTier1(html, language, (check) =>
+          setChecks((prev) => [...prev, check])
+        );
+        passed = verification.passed;
+
+        if (passed || attemptNumber >= MAX_REPAIRS) {
+          await fetch("/api/persist-generation", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id,
+              goal,
+              classNumber,
+              language,
+              photoPath,
+              artifactHtml: html,
+              verification: { passed, attempts: attemptNumber + 1, checks: verification.checks },
+            }),
+          });
+          break;
         }
+
+        attemptNumber += 1;
+        setAttempt(attemptNumber);
+        previousHtml = html;
+        failureSummary = buildFailureSummary(verification.checks);
       }
+
+      setFinalHtml(html);
+      setStatus(passed ? "done" : "failed");
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err));
       setStatus("error");
@@ -87,6 +174,7 @@ export default function Home() {
 
   const previewSize =
     previewMode === "phone" ? { width: 360, height: 640 } : { width: 800, height: 600 };
+  const busy = status === "generating" || status === "verifying" || status === "repairing";
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
@@ -144,15 +232,21 @@ export default function Home() {
 
           <button
             type="submit"
-            disabled={status === "generating" || goal.trim().length < 3}
+            disabled={busy || goal.trim().length < 3}
             className="min-h-[48px] rounded-md bg-[var(--frame)] px-6 font-bold text-[var(--stone-deep)] disabled:opacity-50"
           >
-            {status === "generating" ? "generating…" : "generate"}
+            {status === "generating"
+              ? "generating…"
+              : status === "repairing"
+                ? `repairing (${attempt}/${MAX_REPAIRS})…`
+                : status === "verifying"
+                  ? "checking…"
+                  : "generate"}
           </button>
         </div>
       </form>
 
-      {(status === "generating" || status === "done" || status === "error") && (
+      {(busy || streamedText) && (
         <section className="mt-8">
           <h2 className="mb-2 border-b border-[var(--frame)] pb-1 text-[var(--chalk-dim)]">
             generation
@@ -160,10 +254,36 @@ export default function Home() {
           <pre className="max-h-64 overflow-auto rounded-md bg-[var(--stone-deep)] p-3 text-xs text-[var(--chalk-dim)]">
             {streamedText || "waiting for the model…"}
           </pre>
-          {status === "error" && (
-            <p className="mt-2 text-[var(--chalk-rose)]">{errorMessage}</p>
-          )}
         </section>
+      )}
+
+      {checks.length > 0 && (
+        <section className="mt-8">
+          <h2 className="mb-2 border-b border-[var(--frame)] pb-1 text-[var(--chalk-dim)]">
+            checks
+          </h2>
+          <ul className="flex flex-col gap-1 text-sm">
+            {checks.map((c, i) => (
+              <li
+                key={`${c.id}-${i}`}
+                className={c.passed ? "text-[var(--chalk-green)]" : "text-[var(--chalk-rose)]"}
+              >
+                {c.passed ? "✓" : "✗"} {c.label}
+                {!c.passed && c.detail ? ` — ${c.detail}` : ""}
+                {!c.passed && status === "repairing" ? " → repairing" : ""}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {status === "error" && <p className="mt-4 text-[var(--chalk-rose)]">{errorMessage}</p>}
+
+      {status === "failed" && (
+        <p className="mt-4 text-[var(--chalk-rose)]">
+          Still failing verification after {MAX_REPAIRS} repair attempts. Showing the last attempt
+          below — check the failures listed above before forwarding this to students.
+        </p>
       )}
 
       {finalHtml && (

@@ -99,3 +99,40 @@
   Takeaway: when a `.env` value stops working right after an edit, suspect
   a missing newline before re-checking the credential itself.
 
+## Step 4 — Tier 1 verification + repair loop
+
+- Verification runs entirely client-side (`src/lib/verification/tier1.ts`),
+  never on the server — AGENTS.md is explicit about this and there's no
+  DOM/browser available in the Next.js API route anyway. This forced a
+  real architecture change from step 3: `/api/generate` no longer persists
+  to Supabase itself (it can't know the verification outcome, which is
+  computed in the browser after the stream ends). Persistence moved to a
+  new `/api/persist-generation` route, called once by the client after the
+  generate→verify→repair loop settles (pass, or repairs exhausted).
+  `/api/generate` also gained a repair mode (`previousHtml` +
+  `failureSummary` form fields) so the same route serves both the initial
+  generation and every repair attempt.
+- Static checks (DOM contract, external refs, size, language) run via
+  `DOMParser` on the raw string, not the iframe — they don't need
+  rendering, and running them first is cheap insurance before paying for
+  three viewport passes. Only the geometry/behaviour checks (JS errors,
+  control responsiveness, contrast, projection floors, scene aspect,
+  overflow) use the live iframe, resized in place through the three Tier 1
+  viewports without reloading — see VERIFICATION.md for the full list.
+- Cap is 3 repair attempts (4 generations total: initial + 3 repairs),
+  matching §5b ("cap repairs at 3 retries"). Whatever the last attempt
+  produces is persisted and shown to the teacher regardless of outcome —
+  never hidden — with the specific failing checks named, per §4.
+- Real incident (see VERIFICATION.md for the full writeup): the first
+  version of the control-dispatch helper used `instanceof
+  HTMLSelectElement`/`HTMLInputElement`/`HTMLElement` to decide how to
+  exercise each `[data-control]` element inside the verification iframe.
+  This fails silently across the iframe/parent realm boundary even with
+  `allow-same-origin` — same-origin isn't the same realm — so every
+  dispatch was a no-op and `prediction-unlocks` failed on every artifact
+  regardless of whether it actually worked. Cost 3 wasted repair calls
+  against a real generation before being caught. Fixed with `tagName`
+  checks and a bare `.click()` (method calls are realm-agnostic), then
+  confirmed against the already-generated "failing" artifact at zero
+  additional API cost before re-testing live.
+

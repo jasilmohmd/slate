@@ -139,6 +139,40 @@ ${REFERENCE_ARTIFACT_HTML}
 \`\`\`
 `;
 
+export interface RepairInput extends GenerationInput {
+  previousHtml: string;
+  failureSummary: string;
+}
+
+export function buildRepairPrompt(input: RepairInput): string {
+  const imageNote = input.hasImage
+    ? `\nA photo of the teacher's textbook page or board work is attached again. Keep matching its notation.`
+    : "";
+
+  return `${STATIC_PREAMBLE}
+
+REPAIR REQUEST — your previous attempt at this same artifact failed
+automated verification. Fix EXACTLY the failures listed below and return
+the FULL corrected HTML document. Keep everything that wasn't flagged
+unchanged.
+
+- Class: ${input.classNumber} (Band B).
+- Teacher's stated goal: "${input.goal}"
+- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote}
+
+FAILED CHECKS:
+${input.failureSummary}
+
+YOUR PREVIOUS ATTEMPT:
+\`\`\`html
+${input.previousHtml}
+\`\`\`
+
+OUTPUT FORMAT: respond with ONLY the raw corrected HTML document, starting
+with <!doctype html> and ending with </html>. No markdown code fences, no
+commentary before or after.`;
+}
+
 export function buildGenerationPrompt(input: GenerationInput): string {
   const imageNote = input.hasImage
     ? `\nA photo of the teacher's textbook page or board work is attached. Match

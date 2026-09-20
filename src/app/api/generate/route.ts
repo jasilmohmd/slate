@@ -1,7 +1,7 @@
 import { z } from "zod";
 import sharp from "sharp";
 import { bandFromClass } from "@/lib/band";
-import { buildGenerationPrompt } from "@/lib/artifact/generationPrompt";
+import { buildGenerationPrompt, buildRepairPrompt } from "@/lib/artifact/generationPrompt";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -13,6 +13,9 @@ const RequestSchema = z.object({
   goal: z.string().trim().min(3, "Say a bit more about what you're teaching.").max(2000),
   classNumber: z.coerce.number().int(),
   language: z.enum(["ml", "en"]),
+  previousHtml: z.string().optional(),
+  failureSummary: z.string().optional(),
+  generationId: z.string().uuid().optional(),
 });
 
 function encodeLine(obj: unknown) {
@@ -31,6 +34,9 @@ export async function POST(request: Request) {
     goal: formData.get("goal"),
     classNumber: formData.get("classNumber"),
     language: formData.get("language"),
+    previousHtml: formData.get("previousHtml") ?? undefined,
+    failureSummary: formData.get("failureSummary") ?? undefined,
+    generationId: formData.get("generationId") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -40,7 +46,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const { goal, classNumber, language } = parsed.data;
+  const { goal, classNumber, language, previousHtml, failureSummary } = parsed.data;
+  const isRepair = !!previousHtml && !!failureSummary;
   const band = bandFromClass(classNumber);
   if (band !== "B") {
     return Response.json(
@@ -67,13 +74,22 @@ export async function POST(request: Request) {
       .toBuffer();
   }
 
-  const generationId = globalThis.crypto.randomUUID();
-  const prompt = buildGenerationPrompt({
-    goal,
-    classNumber,
-    language,
-    hasImage: photoBuffer !== null,
-  });
+  const generationId = parsed.data.generationId ?? globalThis.crypto.randomUUID();
+  const prompt = isRepair
+    ? buildRepairPrompt({
+        goal,
+        classNumber,
+        language,
+        hasImage: photoBuffer !== null,
+        previousHtml: previousHtml!,
+        failureSummary: failureSummary!,
+      })
+    : buildGenerationPrompt({
+        goal,
+        classNumber,
+        language,
+        hasImage: photoBuffer !== null,
+      });
 
   const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
   if (photoBuffer) {
@@ -133,10 +149,11 @@ export async function POST(request: Request) {
 
         const finalHtml = stripCodeFence(fullText);
 
+        // The photo only needs uploading once per generation (record source
+        // of truth); repair calls re-send it purely for vision context.
         let photoPath: string | null = null;
-        const supabase = createSupabaseServerClient();
-
-        if (photoBuffer) {
+        if (photoBuffer && !isRepair) {
+          const supabase = createSupabaseServerClient();
           photoPath = `${generationId}/photo.jpg`;
           const { error: uploadError } = await supabase.storage
             .from("uploads")
@@ -146,20 +163,9 @@ export async function POST(request: Request) {
           }
         }
 
-        const { error: insertError } = await supabase.from("generations").insert({
-          id: generationId,
-          concept: goal,
-          band,
-          language,
-          record: { goal, classNumber, language, photoPath },
-          artifact_html: finalHtml,
-          verification: null,
-        });
-        if (insertError) {
-          throw new Error(`Saving generation failed: ${insertError.message}`);
-        }
-
-        controller.enqueue(encodeLine({ type: "done", id: generationId, html: finalHtml }));
+        controller.enqueue(
+          encodeLine({ type: "done", id: generationId, html: finalHtml, photoPath })
+        );
       } catch (err) {
         controller.enqueue(
           encodeLine({ type: "error", message: err instanceof Error ? err.message : String(err) })

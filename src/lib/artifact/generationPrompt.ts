@@ -139,6 +139,88 @@ ${REFERENCE_ARTIFACT_HTML}
 \`\`\`
 `;
 
+// Fences are built from plain double-quoted strings so nothing in this file
+// needs escaped backticks inside a template literal.
+const FENCE_OPEN = "```html";
+const FENCE_CLOSE = "```";
+
+export interface CorrectionPointer {
+  /** Stable id of the control the teacher pointed at, when they hit one. */
+  controlId: string | null;
+  /** The §2d section it sits in, used when no control matched. */
+  role: string | null;
+  /** Human-readable name of what was tapped, as the teacher saw it. */
+  label: string;
+  elementSnippet: string;
+  /** The teacher's own words. */
+  comment: string;
+}
+
+export interface CorrectionInput extends GenerationInput {
+  previousHtml: string;
+  correction: CorrectionPointer;
+}
+
+/**
+ * Correction by pointing (§5 step 3). Deliberately the same shape as a
+ * repair — previous document in, full corrected document out — because
+ * there is no diff or patch infrastructure here and partial patches from a
+ * model are unreliable. What differs is the instruction: a repair fixes
+ * named check failures, a correction interprets one sentence of a teacher's
+ * own words about one element, and must leave everything else alone.
+ */
+export function buildCorrectionPrompt(input: CorrectionInput): string {
+  const imageNote = input.hasImage
+    ? "\nA photo of the teacher's textbook page or board work is attached again. Keep matching its notation."
+    : "";
+
+  const pointer = input.correction.controlId
+    ? 'the control with data-control="' + input.correction.controlId + '"'
+    : input.correction.role
+      ? 'the section with data-role="' + input.correction.role + '"'
+      : "the element shown below";
+
+  const shownAs = input.correction.label
+    ? ' — shown to them as "' + input.correction.label + '"'
+    : "";
+
+  return `${STATIC_PREAMBLE}
+
+CORRECTION REQUEST — the teacher previewed your artifact, pointed at one
+specific part of it, and said in their own words what is wrong with it.
+
+- Class: ${input.classNumber} (Band B).
+- Teacher's original goal: "${input.goal}"
+- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote}
+
+THEY POINTED AT: ${pointer}${shownAs}
+
+${FENCE_OPEN}
+${input.correction.elementSnippet}
+${FENCE_CLOSE}
+
+THEY SAID: "${input.correction.comment}"
+
+Change ONLY what is needed to address that comment. Leave everything else
+exactly as it is — the layout, the other controls, the other text, the
+prediction-then-reveal flow, the DOM contract, and the wording of anything
+they did not complain about. Do not take the opportunity to improve
+unrelated parts. Every rule in the contract above still applies to the
+result.
+
+If the comment is ambiguous, make the smallest change that could reasonably
+satisfy it rather than a large interpretive rewrite.
+
+CURRENT VERSION OF THE ARTIFACT:
+${FENCE_OPEN}
+${input.previousHtml}
+${FENCE_CLOSE}
+
+OUTPUT FORMAT: respond with ONLY the raw corrected HTML document, starting
+with <!doctype html> and ending with </html>. No markdown code fences, no
+commentary before or after.`;
+}
+
 export interface RepairInput extends GenerationInput {
   previousHtml: string;
   failureSummary: string;

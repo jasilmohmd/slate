@@ -139,6 +139,7 @@ ${REFERENCE_ARTIFACT_HTML}
 \`\`\`
 `;
 
+
 // Fences are built from plain double-quoted strings so nothing in this file
 // needs escaped backticks inside a template literal.
 const FENCE_OPEN = "```html";
@@ -161,6 +162,60 @@ export interface CorrectionInput extends GenerationInput {
   correction: CorrectionPointer;
 }
 
+export interface RepairInput extends GenerationInput {
+  previousHtml: string;
+  failureSummary: string;
+}
+
+const OUTPUT_FORMAT = `OUTPUT FORMAT: respond with ONLY the raw HTML document, starting with
+<!doctype html> and ending with </html>. No markdown code fences, no
+commentary before or after.`;
+
+function imageNote(hasImage: boolean, repeated: boolean): string {
+  if (!hasImage) return "";
+  return repeated
+    ? "\nA photo of the teacher's textbook page or board work is attached again. Keep matching its notation."
+    : `\nA photo of the teacher's textbook page or board work is attached. Match
+its notation, symbols and any given values where relevant to the goal
+below.`;
+}
+
+// The task blocks below deliberately exclude STATIC_PREAMBLE. It is sent as
+// its own leading message (see buildMessages) so it stays a byte-identical
+// cacheable prefix across every call in a session, which is what makes §5b's
+// prompt-prefix caching pay off turn over turn rather than only on the first
+// call.
+
+export function buildGenerationTask(input: GenerationInput): string {
+  return `NEW ARTIFACT TO GENERATE:
+- Class: ${input.classNumber} (Band B).
+- Teacher's stated goal, in their own words: "${input.goal}"
+- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote(input.hasImage, false)}
+
+${OUTPUT_FORMAT}`;
+}
+
+export function buildRepairTask(input: RepairInput): string {
+  return `REPAIR REQUEST — your previous attempt at this same artifact failed
+automated verification. Fix EXACTLY the failures listed below and return
+the FULL corrected HTML document. Keep everything that wasn't flagged
+unchanged.
+
+- Class: ${input.classNumber} (Band B).
+- Teacher's stated goal: "${input.goal}"
+- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote(input.hasImage, true)}
+
+FAILED CHECKS:
+${input.failureSummary}
+
+YOUR PREVIOUS ATTEMPT:
+${FENCE_OPEN}
+${input.previousHtml}
+${FENCE_CLOSE}
+
+${OUTPUT_FORMAT}`;
+}
+
 /**
  * Correction by pointing (§5 step 3). Deliberately the same shape as a
  * repair — previous document in, full corrected document out — because
@@ -169,11 +224,7 @@ export interface CorrectionInput extends GenerationInput {
  * named check failures, a correction interprets one sentence of a teacher's
  * own words about one element, and must leave everything else alone.
  */
-export function buildCorrectionPrompt(input: CorrectionInput): string {
-  const imageNote = input.hasImage
-    ? "\nA photo of the teacher's textbook page or board work is attached again. Keep matching its notation."
-    : "";
-
+export function buildCorrectionTask(input: CorrectionInput): string {
   const pointer = input.correction.controlId
     ? 'the control with data-control="' + input.correction.controlId + '"'
     : input.correction.role
@@ -184,14 +235,12 @@ export function buildCorrectionPrompt(input: CorrectionInput): string {
     ? ' — shown to them as "' + input.correction.label + '"'
     : "";
 
-  return `${STATIC_PREAMBLE}
-
-CORRECTION REQUEST — the teacher previewed your artifact, pointed at one
+  return `CORRECTION REQUEST — the teacher previewed your artifact, pointed at one
 specific part of it, and said in their own words what is wrong with it.
 
 - Class: ${input.classNumber} (Band B).
 - Teacher's original goal: "${input.goal}"
-- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote}
+- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote(input.hasImage, true)}
 
 THEY POINTED AT: ${pointer}${shownAs}
 
@@ -216,60 +265,81 @@ ${FENCE_OPEN}
 ${input.previousHtml}
 ${FENCE_CLOSE}
 
-OUTPUT FORMAT: respond with ONLY the raw corrected HTML document, starting
-with <!doctype html> and ending with </html>. No markdown code fences, no
-commentary before or after.`;
+${OUTPUT_FORMAT}`;
 }
 
-export interface RepairInput extends GenerationInput {
-  previousHtml: string;
-  failureSummary: string;
-}
-
-export function buildRepairPrompt(input: RepairInput): string {
-  const imageNote = input.hasImage
-    ? `\nA photo of the teacher's textbook page or board work is attached again. Keep matching its notation.`
-    : "";
-
-  return `${STATIC_PREAMBLE}
-
-REPAIR REQUEST — your previous attempt at this same artifact failed
-automated verification. Fix EXACTLY the failures listed below and return
-the FULL corrected HTML document. Keep everything that wasn't flagged
-unchanged.
-
-- Class: ${input.classNumber} (Band B).
-- Teacher's stated goal: "${input.goal}"
-- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote}
-
-FAILED CHECKS:
-${input.failureSummary}
-
-YOUR PREVIOUS ATTEMPT:
-\`\`\`html
-${input.previousHtml}
-\`\`\`
-
-OUTPUT FORMAT: respond with ONLY the raw corrected HTML document, starting
-with <!doctype html> and ending with </html>. No markdown code fences, no
-commentary before or after.`;
-}
-
+/** Kept whole for one-off scripts that call the API directly. */
 export function buildGenerationPrompt(input: GenerationInput): string {
-  const imageNote = input.hasImage
-    ? `\nA photo of the teacher's textbook page or board work is attached. Match
-its notation, symbols and any given values where relevant to the goal
-below.`
-    : "";
-
   return `${STATIC_PREAMBLE}
 
-NEW ARTIFACT TO GENERATE:
+${buildGenerationTask(input)}`;
+}
+
+export type ChatContent = string | Array<Record<string, unknown>>;
+export type ChatMessage = { role: "user" | "assistant"; content: ChatContent };
+
+/** One already-applied correction, replayed as context rather than in full. */
+export interface HistoryEntry {
+  label: string;
+  comment: string;
+}
+
+export interface MessagesInput extends GenerationInput {
+  task: string;
+  /** Corrections already applied in this session, oldest first. */
+  history?: HistoryEntry[];
+  /** data: URL for the downscaled photo, attached to the final turn only. */
+  imageDataUrl?: string | null;
+  /** True once this is a follow-up to an artifact that already exists. */
+  isFollowUp: boolean;
+}
+
+/**
+ * Builds the real OpenAI messages array for a call.
+ *
+ * Two things matter here. First, STATIC_PREAMBLE is always the whole of the
+ * first message and never varies, so the cacheable prefix is byte-identical
+ * on every call in a session — a generation, a repair and a correction all
+ * share it. Second, earlier turns collapse to short placeholders instead of
+ * replaying multi-hundred-KB documents: the model needs the CURRENT document
+ * at full fidelity (it is in `task`) plus enough context to know what has
+ * already been addressed. That keeps token growth linear in the number and
+ * length of comments rather than in the artifact size.
+ */
+export function buildMessages(input: MessagesInput): ChatMessage[] {
+  const messages: ChatMessage[] = [
+    { role: "user", content: STATIC_PREAMBLE },
+    {
+      role: "user",
+      content: `THIS SESSION'S ARTIFACT:
 - Class: ${input.classNumber} (Band B).
 - Teacher's stated goal, in their own words: "${input.goal}"
-- Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote}
+- Language: ${LANGUAGE_INSTRUCTION[input.language]}`,
+    },
+  ];
 
-OUTPUT FORMAT: respond with ONLY the raw HTML document, starting with
-<!doctype html> and ending with </html>. No markdown code fences, no
-commentary before or after.`;
+  if (input.isFollowUp) {
+    messages.push({ role: "assistant", content: "[drafted the artifact]" });
+  }
+
+  for (const entry of input.history ?? []) {
+    messages.push({
+      role: "user",
+      content: `The teacher pointed at ${entry.label || "part of the artifact"} and said: "${entry.comment}"`,
+    });
+    messages.push({ role: "assistant", content: `[corrected: ${entry.comment}]` });
+  }
+
+  const final: ChatMessage = input.imageDataUrl
+    ? {
+        role: "user",
+        content: [
+          { type: "text", text: input.task },
+          { type: "image_url", image_url: { url: input.imageDataUrl } },
+        ],
+      }
+    : { role: "user", content: input.task };
+
+  messages.push(final);
+  return messages;
 }

@@ -61,6 +61,8 @@ async function callGenerate(params: {
   previousHtml?: string;
   failureSummary?: string;
   correction?: Selection & { comment: string };
+  /** Comments from corrections already applied, oldest first. */
+  history?: Array<{ label: string; comment: string }>;
   generationId?: string;
 }): Promise<{
   id: string;
@@ -78,6 +80,7 @@ async function callGenerate(params: {
   if (params.failureSummary) formData.set("failureSummary", params.failureSummary);
   if (params.generationId) formData.set("generationId", params.generationId);
   if (params.correction) formData.set("correction", JSON.stringify(params.correction));
+  if (params.history?.length) formData.set("history", JSON.stringify(params.history));
 
   const res = await fetch("/api/generate", { method: "POST", body: formData });
   if (!res.ok || !res.body) {
@@ -193,6 +196,7 @@ export default function Home() {
     generationId?: string;
     previousHtml?: string;
     correction?: Selection & { comment: string };
+    history?: Array<{ label: string; comment: string }>;
   }) {
     let html = "";
     let id = opts.generationId;
@@ -216,6 +220,7 @@ export default function Home() {
         previousHtml,
         failureSummary,
         correction,
+        history: opts.history,
         generationId: id,
       });
       html = result.html;
@@ -347,6 +352,9 @@ export default function Home() {
         generationId,
         previousHtml: finalHtml,
         correction: pointer,
+        // Replayed as short placeholders, not whole documents, so a long
+        // session's cost grows with the comments rather than the artifact.
+        history: corrections.map((c) => ({ label: c.label, comment: c.comment })),
       });
 
       const next: Correction[] = [

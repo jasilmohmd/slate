@@ -195,3 +195,46 @@
   that could drift from what the builder enforces.
 - Prompt-prefix caching is confirmed working, not assumed: the measurement
   logged `cached=9005` of 9008 input tokens on every run after the first.
+- **Correction by pointing** uses a `postMessage` shim injected into the
+  preview rather than adding `allow-same-origin` to that iframe. Same-origin
+  would hand the generated artifact's own script access to the builder page,
+  and it buys nothing: `postMessage` crosses an opaque origin fine. It is
+  also the more correct mechanism — artifacts scale their scene through a
+  viewBox, so a listener on the real DOM node resolves the right element at
+  any scale, while hit-testing from the parent would have to redo the
+  artifact's coordinate maths. The shim stays inert until the parent enables
+  it and intercepts on `pointerdown`, so pointing at a slider does not drag
+  it. `finalHtml` is never modified; only the preview's `srcdoc` carries the
+  shim, so the downloaded file is the verified document.
+- **Corrections are uncapped** (unlike repairs, capped at 3). A repair is the
+  system retrying itself and deserves a budget stop; a correction is the
+  teacher deciding the material is not right yet, and cutting them off at an
+  arbitrary count would be the wrong party's decision. Every correction is
+  still verified and still routes through `chooseModel`.
+- **The label the teacher sees comes from the element they actually tapped,**
+  not from the resolved container. Deriving it from the container picked up
+  whichever `[data-text="label"]` came first in the subtree — reporting "R₁"
+  for a tap on the section heading.
+- **Luna's classification call sets `reasoning_effort: "none"` and leaves
+  token headroom.** Luna is a reasoning model: with a tight
+  `max_completion_tokens` the entire budget is spent on reasoning tokens,
+  `finish_reason` comes back `"length"` and `content` is an empty string,
+  which the fail-open path then classified as "complex" — every time. The
+  bug was silent and would have shown up only as an unexplained bill.
+  Measured agreement with manual judgement after the fix: 7/7.
+- **Prompts are a real `messages` array, not one flattened string.**
+  `STATIC_PREAMBLE` is the whole of the first message and never varies, so
+  the cacheable prefix is byte-identical across generation, repair and
+  correction. Earlier turns collapse to `[corrected: <comment>]` placeholders
+  instead of replaying documents: the model needs the *current* document at
+  full fidelity plus enough context to know what has been addressed.
+  Measured over a 3-correction session (gpt-5.6-terra): the thread grows
+  ~47 tokens per correction (17088 → 17134 → 17182), and a warm cache covers
+  17085 of 17088 input tokens. Replaying the prior documents in full instead
+  costs 32730 tokens by round 3 — 1.9x more, widening by roughly 7.7k tokens
+  per additional correction. The first call after a change writes the cache
+  and reports `cached: 0`; the hit shows from the second call on.
+- **A failed save is surfaced, not swallowed.** `persistRound` previously
+  ignored the response, so a Supabase outage produced a finished artifact
+  with no record and no indication. It now tells the teacher to download the
+  file before leaving the page.

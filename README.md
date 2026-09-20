@@ -58,12 +58,11 @@ No state management library, component kit, ORM, or auth provider — a single h
 
 ## What's built vs. what's specified but unbuilt
 
-**Built:** infra + Supabase schema; the fixed CSS base (colour tokens, projection-safe type scale, stroke weights, the two independent viewport regimes); one hand-verified reference artifact (Band B, parallel/series circuits); the generation core (text + photo input, streaming, Band B only); Tier 1 client-side verification with a 3-retry repair loop, surfaced live in the UI.
+**Built:** infra + Supabase schema; the fixed CSS base (colour tokens, projection-safe type scale, stroke weights, the two independent viewport regimes); one hand-verified reference artifact (Band B, parallel/series circuits); the generation core (text + photo input, streaming, Band B only); Tier 1 client-side verification with a 3-retry repair loop, surfaced live in the UI; per-job model routing (§5b); correction by pointing — the teacher taps the part of the rendered artifact that is wrong, says what is wrong in plain language, and gets a targeted regeneration that is re-verified before it replaces the current version, with every correction accumulating in the generation record (§2c).
 
 **Specified but cut from this build**, per the spec's own explicit scope discipline for a 6.5-hour build — not attempted, not stubbed:
 
 - **Tier 2 numerical reference checks** and **Tier 3 review flagging** (Bands B/C's mandatory/recommended numerical verification against an independent reference implementation)
-- **Correction by pointing** (teacher clicks the wrong part, targeted regeneration)
 - **Multi-artifact export** (explainer + practice set + step-through from one session)
 - **Alternatives** (2–3 parallel approaches to the same concept)
 - **The cache layer** (`concept + band + language` lookup before generation)

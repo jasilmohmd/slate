@@ -2,9 +2,10 @@ import { z } from "zod";
 import sharp from "sharp";
 import { bandFromClass } from "@/lib/band";
 import {
-  buildCorrectionPrompt,
-  buildGenerationPrompt,
-  buildRepairPrompt,
+  buildCorrectionTask,
+  buildGenerationTask,
+  buildMessages,
+  buildRepairTask,
 } from "@/lib/artifact/generationPrompt";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { chooseModel } from "@/lib/models/router";
@@ -31,6 +32,24 @@ const RequestSchema = z.object({
   previousHtml: z.string().optional(),
   failureSummary: z.string().optional(),
   generationId: z.string().uuid().optional(),
+  // Comments from corrections already applied this session, oldest first.
+  // Replayed as short placeholders so the thread carries context without
+  // re-sending every historical document.
+  history: z
+    .string()
+    .optional()
+    .transform((raw, ctx) => {
+      if (!raw) return undefined;
+      try {
+        return z
+          .array(z.object({ label: z.string().max(200), comment: z.string().max(1000) }))
+          .max(50)
+          .parse(JSON.parse(raw));
+      } catch {
+        ctx.addIssue({ code: "custom", message: "Invalid history payload" });
+        return z.NEVER;
+      }
+    }),
   correction: z
     .string()
     .optional()
@@ -65,6 +84,7 @@ export async function POST(request: Request) {
     failureSummary: formData.get("failureSummary") ?? undefined,
     generationId: formData.get("generationId") ?? undefined,
     correction: formData.get("correction") ?? undefined,
+    history: formData.get("history") ?? undefined,
   });
 
   if (!parsed.success) {
@@ -74,7 +94,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const { goal, classNumber, language, previousHtml, failureSummary, correction } = parsed.data;
+  const { goal, classNumber, language, previousHtml, failureSummary, correction, history } =
+    parsed.data;
   const isCorrection = !!previousHtml && !!correction;
   const isRepair = !isCorrection && !!previousHtml && !!failureSummary;
   // Either kind of follow-up reuses the existing record rather than starting
@@ -107,34 +128,13 @@ export async function POST(request: Request) {
   }
 
   const generationId = parsed.data.generationId ?? globalThis.crypto.randomUUID();
-  const prompt = isCorrection
-    ? buildCorrectionPrompt({
-        goal,
-        classNumber,
-        language,
-        hasImage: photoBuffer !== null,
-        previousHtml: previousHtml!,
-        correction: correction!,
-      })
+  const shared = { goal, classNumber, language, hasImage: photoBuffer !== null };
+  const task = isCorrection
+    ? buildCorrectionTask({ ...shared, previousHtml: previousHtml!, correction: correction! })
     : isRepair
-    ? buildRepairPrompt({
-        goal,
-        classNumber,
-        language,
-        hasImage: photoBuffer !== null,
-        previousHtml: previousHtml!,
-        failureSummary: failureSummary!,
-      })
-    : buildGenerationPrompt({
-        goal,
-        classNumber,
-        language,
-        hasImage: photoBuffer !== null,
-      });
+      ? buildRepairTask({ ...shared, previousHtml: previousHtml!, failureSummary: failureSummary! })
+      : buildGenerationTask(shared);
 
-  // A photo rides on the same call that generates the artifact, so that
-  // call IS the vision call and must route as one (§5b: never Luna for
-  // vision). This matters the moment the generation default is not Sol.
   // Cheap Luna triage decides whether a correction needs the stronger model
   // (§5b). It fails open to "complex", so a classifier outage costs money,
   // never quality.
@@ -147,13 +147,15 @@ export async function POST(request: Request) {
     ? chooseModel("vision")
     : chooseModel(job, { correctionComplexity: complexity ?? undefined });
 
-  const content: Array<Record<string, unknown>> = [{ type: "text", text: prompt }];
-  if (photoBuffer) {
-    content.push({
-      type: "image_url",
-      image_url: { url: `data:image/jpeg;base64,${photoBuffer.toString("base64")}` },
-    });
-  }
+  const messages = buildMessages({
+    ...shared,
+    task,
+    history,
+    isFollowUp,
+    imageDataUrl: photoBuffer
+      ? `data:image/jpeg;base64,${photoBuffer.toString("base64")}`
+      : null,
+  });
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -168,7 +170,7 @@ export async function POST(request: Request) {
           body: JSON.stringify({
             model,
             stream: true,
-            messages: [{ role: "user", content }],
+            messages,
           }),
         });
 

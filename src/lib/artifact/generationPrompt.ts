@@ -158,6 +158,8 @@ ${REFERENCE_ARTIFACT_HTML}
 const FENCE_OPEN = "```html";
 const FENCE_CLOSE = "```";
 
+/** The element the teacher pointed at. Purely the target; what they said
+ *  about it lives on the refine request. */
 export interface CorrectionPointer {
   /** Stable id of the control the teacher pointed at, when they hit one. */
   controlId: string | null;
@@ -166,13 +168,17 @@ export interface CorrectionPointer {
   /** Human-readable name of what was tapped, as the teacher saw it. */
   label: string;
   elementSnippet: string;
-  /** The teacher's own words. */
-  comment: string;
 }
 
-export interface CorrectionInput extends GenerationInput {
+/** What the teacher asked for, and the element they pointed at if any. */
+export interface RefineRequest {
+  comment: string;
+  pointer: CorrectionPointer | null;
+}
+
+export interface RefineInput extends GenerationInput {
   previousHtml: string;
-  correction: CorrectionPointer;
+  refine: RefineRequest;
 }
 
 export interface RepairInput extends GenerationInput {
@@ -230,48 +236,61 @@ ${OUTPUT_FORMAT}`;
 }
 
 /**
- * Correction by pointing (§5 step 3). Deliberately the same shape as a
- * repair — previous document in, full corrected document out — because
- * there is no diff or patch infrastructure here and partial patches from a
- * model are unreliable. What differs is the instruction: a repair fixes
- * named check failures, a correction interprets one sentence of a teacher's
- * own words about one element, and must leave everything else alone.
+ * A refinement: the teacher said what they want changed, optionally after
+ * pointing at a specific element. Correction by pointing is the case where
+ * a pointer is present, not a separate flow.
+ *
+ * Deliberately the same shape as a repair - previous document in, full
+ * corrected document out - because there is no diff or patch infrastructure
+ * here and partial patches from a model are unreliable. What differs is the
+ * instruction: a repair fixes named check failures, a refinement interprets
+ * the teacher's own words and must leave everything else alone.
  */
-export function buildCorrectionTask(input: CorrectionInput): string {
-  const pointer = input.correction.controlId
-    ? 'the control with data-control="' + input.correction.controlId + '"'
-    : input.correction.role
-      ? 'the section with data-role="' + input.correction.role + '"'
-      : "the element shown below";
+export function buildRefineTask(input: RefineInput): string {
+  const pointer = input.refine.pointer;
 
-  const shownAs = input.correction.label
-    ? ' — shown to them as "' + input.correction.label + '"'
+  const pointedAt = pointer
+    ? (() => {
+        const target = pointer.controlId
+          ? 'the control with data-control="' + pointer.controlId + '"'
+          : pointer.role
+            ? 'the section with data-role="' + pointer.role + '"'
+            : "the element shown below";
+        const shownAs = pointer.label ? ' - shown to them as "' + pointer.label + '"' : "";
+        return [
+          "",
+          "THEY POINTED AT: " + target + shownAs,
+          "",
+          FENCE_OPEN,
+          pointer.elementSnippet,
+          FENCE_CLOSE,
+        ].join("\n");
+      })()
     : "";
 
-  return `CORRECTION REQUEST — the teacher previewed your artifact, pointed at one
-specific part of it, and said in their own words what is wrong with it.
+  const framing = pointer
+    ? `CHANGE REQUEST - the teacher previewed your artifact, pointed at one
+specific part of it, and said in their own words what they want changed.`
+    : `CHANGE REQUEST - the teacher previewed your artifact and said in their
+own words what they want changed.`;
+
+  return `${framing}
 
 - Class: ${input.classNumber} (Band B).
 - Teacher's original goal: "${input.goal}"
 - Language: ${LANGUAGE_INSTRUCTION[input.language]}${imageNote(input.hasImage, true)}
+${pointedAt}
 
-THEY POINTED AT: ${pointer}${shownAs}
+THEY SAID: "${input.refine.comment}"
 
-${FENCE_OPEN}
-${input.correction.elementSnippet}
-${FENCE_CLOSE}
-
-THEY SAID: "${input.correction.comment}"
-
-Change ONLY what is needed to address that comment. Leave everything else
-exactly as it is — the layout, the other controls, the other text, the
+Change ONLY what is needed to address that. Leave everything else exactly
+as it is - the layout, the other controls, the other text, the
 prediction-then-reveal flow, the DOM contract, and the wording of anything
-they did not complain about. Do not take the opportunity to improve
-unrelated parts. Every rule in the contract above still applies to the
-result.
+they did not mention. Do not take the opportunity to improve unrelated
+parts. Every rule in the contract above still applies to the result.
 
-If the comment is ambiguous, make the smallest change that could reasonably
-satisfy it rather than a large interpretive rewrite.
+If what they said is ambiguous, make the smallest change that could
+reasonably satisfy it rather than a large interpretive rewrite.
 
 CURRENT VERSION OF THE ARTIFACT:
 ${FENCE_OPEN}
@@ -280,7 +299,6 @@ ${FENCE_CLOSE}
 
 ${OUTPUT_FORMAT}`;
 }
-
 /** Kept whole for one-off scripts that call the API directly. */
 export function buildGenerationPrompt(input: GenerationInput): string {
   return `${STATIC_PREAMBLE}
@@ -291,18 +309,19 @@ ${buildGenerationTask(input)}`;
 export type ChatContent = string | Array<Record<string, unknown>>;
 export type ChatMessage = { role: "user" | "assistant"; content: ChatContent };
 
-/** One already-applied correction, replayed as context rather than in full. */
+/** One earlier teacher turn, replayed as context rather than in full. */
 export interface HistoryEntry {
-  label: string;
+  /** The pointed-at element's label, when that turn carried a pointer. */
+  label?: string;
   comment: string;
 }
 
 export interface MessagesInput extends GenerationInput {
   task: string;
-  /** Corrections already applied in this session, oldest first. */
+  /** Teacher turns already applied in this session, oldest first. */
   history?: HistoryEntry[];
-  /** data: URL for the downscaled photo, attached to the final turn only. */
-  imageDataUrl?: string | null;
+  /** data: URLs for the downscaled photos, attached to the final turn only. */
+  imageDataUrls?: string[];
   /** True once this is a follow-up to an artifact that already exists. */
   isFollowUp: boolean;
 }
@@ -338,17 +357,20 @@ export function buildMessages(input: MessagesInput): ChatMessage[] {
   for (const entry of input.history ?? []) {
     messages.push({
       role: "user",
-      content: `The teacher pointed at ${entry.label || "part of the artifact"} and said: "${entry.comment}"`,
+      content: entry.label
+        ? `The teacher pointed at ${entry.label} and said: "${entry.comment}"`
+        : `The teacher said: "${entry.comment}"`,
     });
     messages.push({ role: "assistant", content: `[corrected: ${entry.comment}]` });
   }
 
-  const final: ChatMessage = input.imageDataUrl
+  const images = input.imageDataUrls ?? [];
+  const final: ChatMessage = images.length
     ? {
         role: "user",
         content: [
           { type: "text", text: input.task },
-          { type: "image_url", image_url: { url: input.imageDataUrl } },
+          ...images.map((url) => ({ type: "image_url", image_url: { url } })),
         ],
       }
     : { role: "user", content: input.task };

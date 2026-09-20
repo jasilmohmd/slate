@@ -3,34 +3,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { runTier1, type CheckResult } from "@/lib/verification/tier1";
 import { injectSelectionShim } from "@/lib/artifact/selectionShim";
+import { ActivityBlock, isRunning, type Activity, type ActivityStatus } from "./_components/ActivityBlock";
+import { Composer, type Attachment, type Pointer } from "./_components/Composer";
 
-type Status =
-  | "idle"
-  | "generating"
-  | "verifying"
-  | "repairing"
-  | "correcting"
-  | "done"
-  | "failed"
-  | "error";
 type PreviewMode = "phone" | "projector";
 
-/** What the teacher pointed at, as reported by the artifact-side shim. */
-type Selection = {
-  controlId: string | null;
-  role: string | null;
-  label: string;
-  elementSnippet: string;
+/** A teacher's message in the transcript. */
+type TeacherTurn = {
+  kind: "teacher";
+  id: string;
+  at: string;
+  text: string;
+  pointer: Pointer | null;
+  attachments: Array<{ url: string; name: string }>;
+  turnKind: "goal" | "refine" | "correction";
 };
 
-/** A pointed-at correction, as it is written into the record (§2c). */
-type Correction = Selection & {
+/** The work Slate did in response, shown as a live activity block. */
+type ActivityTurn = {
+  kind: "activity";
   id: string;
-  atRound: number;
-  comment: string;
-  complexity: "simple" | "complex" | null;
-  model: string;
+  at: string;
+  activity: Activity;
 };
+
+type TranscriptItem = TeacherTurn | ActivityTurn;
+
+const MAX_REPAIRS = 3;
+const MAX_ATTACHMENTS = 8;
 
 function clampString(value: unknown, max: number): string {
   return typeof value === "string" ? value.slice(0, max) : "";
@@ -40,49 +40,37 @@ function clampNullable(value: unknown, max: number): string | null {
   return typeof value === "string" ? value.slice(0, max) : null;
 }
 
-const CLASS_OPTIONS = [8, 9, 10];
-const MAX_REPAIRS = 3;
-
-// The teacher never sees the artifact source (they do not write code);
-// they see plain language about what is happening, then the checks list
-// ticking through, which is where the real progress detail lives.
-const PROGRESS_COPY: Partial<Record<Status, string>> = {
-  generating: "Drafting your material…",
-  verifying: "Checking it works…",
-  repairing: "Fixing a few things…",
-  correcting: "Making that change…",
-};
-
 async function callGenerate(params: {
   goal: string;
   classNumber: number;
   language: "ml" | "en";
-  photo: File | null;
+  files: File[];
   previousHtml?: string;
   failureSummary?: string;
-  correction?: Selection & { comment: string };
-  /** Comments from corrections already applied, oldest first. */
-  history?: Array<{ label: string; comment: string }>;
+  refine?: { comment: string; pointer: Pointer | null };
+  history?: Array<{ label?: string; comment: string }>;
   generationId?: string;
+  signal: AbortSignal;
 }): Promise<{
   id: string;
   html: string;
-  photoPath: string | null;
+  photoPaths: string[];
   model: string;
   complexity: "simple" | "complex" | null;
+  conceptComplexity: "simple" | "standard" | "dense" | null;
 }> {
   const formData = new FormData();
   formData.set("goal", params.goal);
   formData.set("classNumber", String(params.classNumber));
   formData.set("language", params.language);
-  if (params.photo) formData.set("photo", params.photo);
+  for (const file of params.files) formData.append("photo", file);
   if (params.previousHtml) formData.set("previousHtml", params.previousHtml);
   if (params.failureSummary) formData.set("failureSummary", params.failureSummary);
   if (params.generationId) formData.set("generationId", params.generationId);
-  if (params.correction) formData.set("correction", JSON.stringify(params.correction));
+  if (params.refine) formData.set("refine", JSON.stringify(params.refine));
   if (params.history?.length) formData.set("history", JSON.stringify(params.history));
 
-  const res = await fetch("/api/generate", { method: "POST", body: formData });
+  const res = await fetch("/api/generate", { method: "POST", body: formData, signal: params.signal });
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Request failed (${res.status})`);
@@ -107,9 +95,10 @@ async function callGenerate(params: {
         result = {
           id: msg.id,
           html: msg.html,
-          photoPath: msg.photoPath ?? null,
+          photoPaths: Array.isArray(msg.photoPaths) ? msg.photoPaths : [],
           model: msg.model ?? "",
           complexity: msg.complexity ?? null,
+          conceptComplexity: msg.conceptComplexity ?? null,
         };
       } else if (msg.type === "error") {
         throw new Error(msg.message);
@@ -128,42 +117,81 @@ function buildFailureSummary(checks: CheckResult[]): string {
     .join("\n");
 }
 
+function isAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === "AbortError";
+}
+
 export default function Home() {
-  const [goal, setGoal] = useState("");
   const [classNumber, setClassNumber] = useState(9);
   const [language, setLanguage] = useState<"ml" | "en">("ml");
-  const [photo, setPhoto] = useState<File | null>(null);
-  const [status, setStatus] = useState<Status>("idle");
-  const [checks, setChecks] = useState<CheckResult[]>([]);
-  const [attempt, setAttempt] = useState(0);
+  const [goal, setGoal] = useState("");
+
+  const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [pointer, setPointer] = useState<Pointer | null>(null);
+
+  const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [finalHtml, setFinalHtml] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [generationId, setGenerationId] = useState<string | null>(null);
+  const [photoPaths, setPhotoPaths] = useState<string[]>([]);
+  // Judged once, on the first generation; refinements route on their own
+  // comment and must not overwrite it.
+  const [conceptComplexity, setConceptComplexity] = useState<string | null>(null);
+  const [saveWarning, setSaveWarning] = useState<string | null>(null);
+
   const [previewMode, setPreviewMode] = useState<PreviewMode>("phone");
   const [selectMode, setSelectMode] = useState(false);
-  const [selection, setSelection] = useState<Selection | null>(null);
-  const [comment, setComment] = useState("");
-  const [corrections, setCorrections] = useState<Correction[]>([]);
-  const [photoPath, setPhotoPath] = useState<string | null>(null);
-  const [saveWarning, setSaveWarning] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const previewRef = useRef<HTMLIFrameElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const busy = transcript.some((item) => item.kind === "activity" && isRunning(item.activity.status));
+  const started = transcript.length > 0;
+
+  // ---- attachments -------------------------------------------------------
+
+  function addFiles(list: FileList | null) {
+    if (!list) return;
+    const incoming = [...list].filter((file) => file.type.startsWith("image/"));
+    setAttachments((prev) => {
+      const room = Math.max(0, MAX_ATTACHMENTS - prev.length);
+      const added = incoming.slice(0, room).map((file) => ({
+        id: globalThis.crypto.randomUUID(),
+        file,
+        url: URL.createObjectURL(file),
+      }));
+      return [...prev, ...added];
+    });
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target) URL.revokeObjectURL(target.url);
+      return prev.filter((a) => a.id !== id);
+    });
+  }
+
+  // Object URLs are not garbage-collected with the File; revoke whatever is
+  // still pending when the page goes away.
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+  useEffect(() => {
+    return () => {
+      for (const a of attachmentsRef.current) URL.revokeObjectURL(a.url);
+    };
+  }, []);
+
+  // ---- pointing at the preview ------------------------------------------
 
   const sendSelectMode = useCallback((on: boolean) => {
     previewRef.current?.contentWindow?.postMessage({ type: "slate-select-mode", on }, "*");
   }, []);
 
-  // Keep the artifact-side shim in sync with React state; the iframe is the
-  // external system here, so this belongs in an effect.
   useEffect(() => {
     sendSelectMode(selectMode);
   }, [selectMode, sendSelectMode]);
-
-  function toggleSelectMode() {
-    const next = !selectMode;
-    setSelectMode(next);
-    if (!next) setSelection(null);
-  }
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -175,220 +203,312 @@ export default function Home() {
       if (event.source !== previewRef.current?.contentWindow) return;
       const data = event.data as Record<string, unknown> | null;
       if (!data || data.type !== "slate-select") return;
-      setSelection({
+      setPointer({
         controlId: clampNullable(data.controlId, 200),
         role: clampNullable(data.role, 200),
         label: clampString(data.label, 120),
         elementSnippet: clampString(data.elementSnippet, 400),
       });
+      // One tap picks one element; the chip in the composer carries it.
+      setSelectMode(false);
     }
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // One verified round: generate (or correct), run Tier 1, and fall into the
-  // existing repair loop until it passes or MAX_REPAIRS is spent. Both the
-  // first generation and every correction go through this, so a correction
-  // can never quietly ship an artifact that breaks the §2d contract.
-  async function runVerifiedRound(opts: {
-    firstStatus: Status;
-    generationId?: string;
-    previousHtml?: string;
-    correction?: Selection & { comment: string };
-    history?: Array<{ label: string; comment: string }>;
-  }) {
-    let html = "";
-    let id = opts.generationId;
-    let uploadedPhotoPath: string | null = null;
-    let model = "";
-    let complexity: "simple" | "complex" | null = null;
-    let previousHtml = opts.previousHtml;
-    let correction = opts.correction;
-    let failureSummary: string | undefined;
-    let checks: CheckResult[] = [];
-    let passed = false;
-    let attemptNumber = 0;
+  // ---- transcript helpers ------------------------------------------------
 
-    for (;;) {
-      setStatus(attemptNumber === 0 ? opts.firstStatus : "repairing");
-      const result = await callGenerate({
-        goal,
-        classNumber,
-        language,
-        photo,
-        previousHtml,
-        failureSummary,
-        correction,
-        history: opts.history,
-        generationId: id,
-      });
-      html = result.html;
-      id = result.id;
-      model = result.model;
-      if (attemptNumber === 0) complexity = result.complexity;
-      if (result.photoPath) uploadedPhotoPath = result.photoPath;
-      setGenerationId(id);
-
-      setStatus("verifying");
-      setChecks([]);
-      const verification = await runTier1(html, language, (check) =>
-        setChecks((prev) => [...prev, check])
-      );
-      checks = verification.checks;
-      passed = verification.passed;
-
-      if (passed || attemptNumber >= MAX_REPAIRS) break;
-
-      attemptNumber += 1;
-      setAttempt(attemptNumber);
-      previousHtml = html;
-      failureSummary = buildFailureSummary(checks);
-      // A repair is a repair: the pointer has already been applied, and
-      // re-sending it would ask for the same change a second time.
-      correction = undefined;
-    }
-
-    return {
-      html,
-      id: id as string,
-      uploadedPhotoPath,
-      model,
-      complexity,
-      passed,
-      attempts: attemptNumber + 1,
-      checks,
-    };
+  function patchActivity(id: string, patch: Partial<Activity>) {
+    setTranscript((prev) =>
+      prev.map((item) =>
+        item.kind === "activity" && item.id === id
+          ? { ...item, activity: { ...item.activity, ...patch } }
+          : item
+      )
+    );
   }
 
-  async function persistRound(args: {
+  function appendCheck(id: string, check: CheckResult) {
+    setTranscript((prev) =>
+      prev.map((item) =>
+        item.kind === "activity" && item.id === id
+          ? { ...item, activity: { ...item.activity, checks: [...item.activity.checks, check] } }
+          : item
+      )
+    );
+  }
+
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [transcript.length, busy]);
+
+  // ---- persistence -------------------------------------------------------
+
+  function turnsForRecord(items: TranscriptItem[], paths: string[]) {
+    return items.map((item) => {
+      if (item.kind === "teacher") {
+        return {
+          id: item.id,
+          at: item.at,
+          role: "teacher" as const,
+          kind: item.turnKind,
+          text: item.text,
+          pointer: item.pointer,
+          attachments: item.turnKind === "goal" ? paths : [],
+        };
+      }
+      const a = item.activity;
+      return {
+        id: item.id,
+        at: item.at,
+        role: "slate" as const,
+        kind: "result" as const,
+        text: a.status,
+        model: a.model || undefined,
+        complexity: a.conceptComplexity,
+        verification: a.endedAt
+          ? { passed: a.status === "done", attempts: a.attempt + 1 }
+          : null,
+      };
+    });
+  }
+
+  async function persist(args: {
     id: string;
+    goal: string;
     html: string;
     passed: boolean;
     attempts: number;
     checks: CheckResult[];
-    photoPath: string | null;
-    corrections: Correction[];
+    items: TranscriptItem[];
+    paths: string[];
+    conceptComplexity: string | null;
   }) {
     // A failed save must not look like a failed generation: the artifact is
     // finished, previewable and downloadable either way. But it must not be
     // silent either, or the teacher loses the record without knowing.
+    const warning = "Could not save this session — download the material before you close the page.";
     try {
       const res = await fetch("/api/persist-generation", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: args.id,
-          goal,
+          // Passed in rather than read from state: on the first turn the
+          // goal was set moments ago and this closure still sees the old
+          // value.
+          goal: args.goal,
           classNumber,
           language,
-          photoPath: args.photoPath,
+          photoPaths: args.paths,
+          conceptComplexity: args.conceptComplexity,
           artifactHtml: args.html,
           verification: { passed: args.passed, attempts: args.attempts, checks: args.checks },
-          corrections: args.corrections,
+          turns: turnsForRecord(args.items, args.paths),
         }),
       });
-      setSaveWarning(
-        res.ok ? null : "Could not save this to your library — download it before you close the page."
-      );
+      setSaveWarning(res.ok ? null : warning);
     } catch {
-      setSaveWarning("Could not save this to your library — download it before you close the page.");
+      setSaveWarning(warning);
     }
   }
 
-  async function handleGenerate(e: React.FormEvent) {
-    e.preventDefault();
-    if (busy) return;
+  // ---- the verified round --------------------------------------------------
 
-    setChecks([]);
-    setFinalHtml(null);
-    setErrorMessage(null);
-    setGenerationId(null);
-    setAttempt(0);
-    setCorrections([]);
-    setSelection(null);
-    setComment("");
-    setPhotoPath(null);
-    setSaveWarning(null);
+  // One verified round: generate (or refine), run Tier 1, and fall into the
+  // repair loop until it passes or MAX_REPAIRS is spent. Both the first
+  // generation and every refinement go through this, so a refinement can
+  // never quietly ship an artifact that breaks the §2d contract.
+  async function runVerifiedRound(opts: {
+    activityId: string;
+    sessionGoal: string;
+    files: File[];
+    previousHtml?: string;
+    refine?: { comment: string; pointer: Pointer | null };
+    history?: Array<{ label?: string; comment: string }>;
+    signal: AbortSignal;
+  }) {
+    let html = "";
+    let id = generationId ?? undefined;
+    let uploaded: string[] = [];
+    let model = "";
+    let conceptComplexity: string | null = null;
+    let previousHtml = opts.previousHtml;
+    let refine = opts.refine;
+    let failureSummary: string | undefined;
+    let checks: CheckResult[] = [];
+    let passed = false;
+    let attemptNumber = 0;
 
-    try {
-      const round = await runVerifiedRound({ firstStatus: "generating" });
-      setPhotoPath(round.uploadedPhotoPath);
-      await persistRound({
-        id: round.id,
-        html: round.html,
-        passed: round.passed,
-        attempts: round.attempts,
-        checks: round.checks,
-        photoPath: round.uploadedPhotoPath,
-        corrections: [],
+    for (;;) {
+      patchActivity(opts.activityId, {
+        status: attemptNumber === 0 ? "generating" : "repairing",
+        attempt: attemptNumber,
+        checks: [],
       });
 
-      setFinalHtml(round.html);
-      setSelectMode(false);
-      setStatus(round.passed ? "done" : "failed");
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
-      setStatus("error");
+      const result = await callGenerate({
+        goal: opts.sessionGoal,
+        classNumber,
+        language,
+        files: opts.files,
+        previousHtml,
+        failureSummary,
+        refine,
+        history: opts.history,
+        generationId: id,
+        signal: opts.signal,
+      });
+      html = result.html;
+      id = result.id;
+      model = result.model;
+      if (attemptNumber === 0) conceptComplexity = result.conceptComplexity;
+      if (result.photoPaths.length) uploaded = result.photoPaths;
+      setGenerationId(id);
+
+      patchActivity(opts.activityId, { status: "verifying", model, conceptComplexity });
+      const verification = await runTier1(html, language, (check) =>
+        appendCheck(opts.activityId, check)
+      );
+      checks = verification.checks;
+      passed = verification.passed;
+
+      if (opts.signal.aborted) throw new DOMException("Aborted", "AbortError");
+      if (passed || attemptNumber >= MAX_REPAIRS) break;
+
+      attemptNumber += 1;
+      previousHtml = html;
+      failureSummary = buildFailureSummary(checks);
+      // A repair is a repair: the refinement has already been applied, and
+      // re-sending it would ask for the same change a second time.
+      refine = undefined;
     }
+
+    return { html, id: id as string, uploaded, model, conceptComplexity, passed, attempts: attemptNumber + 1, checks };
   }
 
-  // Correction by pointing (§5 step 3). Unlimited rounds by design — the
-  // teacher decides when the material is right — but every round is still
-  // verified and still capped at MAX_REPAIRS of automatic repair.
-  async function handleCorrection() {
-    if (busy || !finalHtml || !selection || !generationId) return;
-    const text = comment.trim();
-    if (text.length < 3) return;
+  // ---- send ----------------------------------------------------------------
 
-    const pointer = { ...selection, comment: text };
-    setChecks([]);
-    setErrorMessage(null);
-    setAttempt(0);
+  async function handleSend() {
+    const comment = text.trim();
+    if (busy || comment.length < 2) return;
+
+    const isFirst = !finalHtml;
+    const sessionGoal = isFirst ? comment : goal;
+    if (isFirst) setGoal(comment);
+
+    const now = new Date().toISOString();
+    const teacher: TeacherTurn = {
+      kind: "teacher",
+      id: globalThis.crypto.randomUUID(),
+      at: now,
+      text: comment,
+      pointer: isFirst ? null : pointer,
+      attachments: attachments.map((a) => ({ url: a.url, name: a.file.name })),
+      turnKind: isFirst ? "goal" : pointer ? "correction" : "refine",
+    };
+    const activityId = globalThis.crypto.randomUUID();
+    const activityTurn: ActivityTurn = {
+      kind: "activity",
+      id: activityId,
+      at: now,
+      activity: {
+        id: activityId,
+        status: "generating",
+        startedAt: Date.now(),
+        endedAt: null,
+        checks: [],
+        attempt: 0,
+        model: "",
+        conceptComplexity: null,
+        error: null,
+      },
+    };
+
+    const history = transcript
+      .filter((item): item is TeacherTurn => item.kind === "teacher" && item.turnKind !== "goal")
+      .map((item) => ({ label: item.pointer?.label, comment: item.text }));
+
+    const files = attachments.map((a) => a.file);
+    const nextItems = [...transcript, teacher, activityTurn];
+    setTranscript(nextItems);
+    setText("");
+    setAttachments([]);
+    setPointer(null);
+    setSelectMode(false);
+    setSaveWarning(null);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       const round = await runVerifiedRound({
-        firstStatus: "correcting",
-        generationId,
-        previousHtml: finalHtml,
-        correction: pointer,
-        // Replayed as short placeholders, not whole documents, so a long
-        // session's cost grows with the comments rather than the artifact.
-        history: corrections.map((c) => ({ label: c.label, comment: c.comment })),
+        activityId,
+        sessionGoal,
+        files,
+        previousHtml: isFirst ? undefined : (finalHtml ?? undefined),
+        refine: isFirst ? undefined : { comment, pointer },
+        history,
+        signal: controller.signal,
       });
 
-      const next: Correction[] = [
-        ...corrections,
-        {
-          ...selection,
-          id: globalThis.crypto.randomUUID(),
-          atRound: corrections.length + 1,
-          comment: text,
-          complexity: round.complexity,
-          model: round.model,
-        },
-      ];
-      setCorrections(next);
+      const paths = round.uploaded.length ? round.uploaded : photoPaths;
+      setPhotoPaths(paths);
+      const sessionComplexity = round.conceptComplexity ?? conceptComplexity;
+      setConceptComplexity(sessionComplexity);
+      setFinalHtml(round.html);
 
-      await persistRound({
+      const finalStatus: ActivityStatus = round.passed ? "done" : "failed";
+      const finished = nextItems.map((item) =>
+        item.kind === "activity" && item.id === activityId
+          ? {
+              ...item,
+              activity: {
+                ...item.activity,
+                status: finalStatus,
+                endedAt: Date.now(),
+                checks: round.checks,
+                attempt: round.attempts - 1,
+                model: round.model,
+                conceptComplexity: round.conceptComplexity,
+              },
+            }
+          : item
+      );
+      setTranscript(finished);
+
+      await persist({
         id: round.id,
+        goal: sessionGoal,
         html: round.html,
         passed: round.passed,
         attempts: round.attempts,
         checks: round.checks,
-        photoPath,
-        corrections: next,
+        items: finished,
+        paths,
+        conceptComplexity: sessionComplexity,
       });
-
-      setFinalHtml(round.html);
-      setSelection(null);
-      setComment("");
-      setSelectMode(false);
-      setStatus(round.passed ? "done" : "failed");
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
-      setStatus("error");
+      if (isAbort(err) || controller.signal.aborted) {
+        // The teacher pressed Stop: nothing is persisted, nothing replaces
+        // the current material.
+        patchActivity(activityId, { status: "stopped", endedAt: Date.now() });
+      } else {
+        patchActivity(activityId, {
+          status: "error",
+          endedAt: Date.now(),
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
     }
+  }
+
+  function handleStop() {
+    abortRef.current?.abort();
   }
 
   function handleDownload() {
@@ -404,237 +524,133 @@ export default function Home() {
 
   const previewSize =
     previewMode === "phone" ? { width: 360, height: 640 } : { width: 800, height: 600 };
-  const busy =
-    status === "generating" ||
-    status === "verifying" ||
-    status === "repairing" ||
-    status === "correcting";
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-8">
-      <h1 className="text-3xl font-bold text-[var(--chalk)]">Slate</h1>
+    <div className="flex h-dvh flex-col">
+      <header className="flex items-center gap-3 border-b border-[var(--frame)] px-4 py-3">
+        <h1 className="text-2xl font-bold text-[var(--chalk)]">Slate</h1>
+        {goal && <span className="truncate text-sm text-[var(--chalk-dim)]">{goal}</span>}
+      </header>
 
-      <form onSubmit={handleGenerate} className="mt-6 flex flex-col gap-3">
-        <label className="text-[var(--chalk-dim)]" htmlFor="goal">
-          What are you teaching?
-        </label>
-        <textarea
-          id="goal"
-          value={goal}
-          onChange={(e) => setGoal(e.target.value)}
-          placeholder="എന്റെ ക്ലാസ്സിന് പാരലൽ സർക്യൂട്ടിൽ current എങ്ങനെ വീതിക്കപ്പെടുന്നു എന്ന് മനസിലാകുന്നില്ല..."
-          rows={3}
-          className="rounded-md border border-[var(--frame)] bg-[var(--stone-deep)] p-3 text-[var(--chalk)] placeholder:text-[var(--chalk-dim)] focus:outline-none focus:ring-2 focus:ring-[var(--frame)]"
-        />
-
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="min-h-[48px] rounded-md border border-[var(--frame)] px-4 text-[var(--chalk)] hover:bg-[var(--stone-deep)]"
-          >
-            {photo ? photo.name : "add textbook photo"}
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
-          />
-
-          <select
-            value={classNumber}
-            onChange={(e) => setClassNumber(Number(e.target.value))}
-            className="min-h-[48px] rounded-md border border-[var(--frame)] bg-[var(--stone-deep)] px-3 text-[var(--chalk)]"
-          >
-            {CLASS_OPTIONS.map((c) => (
-              <option key={c} value={c}>
-                class {c}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={language}
-            onChange={(e) => setLanguage(e.target.value as "ml" | "en")}
-            className="min-h-[48px] rounded-md border border-[var(--frame)] bg-[var(--stone-deep)] px-3 text-[var(--chalk)]"
-          >
-            <option value="ml">ml</option>
-            <option value="en">en</option>
-          </select>
-
-          <button
-            type="submit"
-            disabled={busy || goal.trim().length < 3}
-            className="min-h-[48px] rounded-md bg-[var(--frame)] px-6 font-bold text-[var(--stone-deep)] disabled:opacity-50"
-          >
-            {status === "generating"
-              ? "generating…"
-              : status === "repairing"
-                ? `repairing (${attempt}/${MAX_REPAIRS})…`
-                : status === "verifying"
-                  ? "checking…"
-                  : "generate"}
-          </button>
-        </div>
-      </form>
-
-      {busy && (
-        <section className="mt-8">
-          <p className="slate-pulse flex items-center gap-2 text-[var(--chalk)]">
-            <span aria-hidden="true">✎</span>
-            {PROGRESS_COPY[status] ?? "Working…"}
-          </p>
-        </section>
-      )}
-
-      {checks.length > 0 && (
-        <section className="mt-8">
-          <h2 className="mb-2 border-b border-[var(--frame)] pb-1 text-[var(--chalk-dim)]">
-            checks
-          </h2>
-          <ul className="flex flex-col gap-1 text-sm">
-            {checks.map((c, i) => (
-              <li
-                key={`${c.id}-${i}`}
-                className={c.passed ? "text-[var(--chalk-green)]" : "text-[var(--chalk-rose)]"}
-              >
-                {c.passed ? "✓" : "✗"} {c.label}
-                {!c.passed && c.detail ? ` — ${c.detail}` : ""}
-                {!c.passed && status === "repairing" ? " → repairing" : ""}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      {status === "error" && <p className="mt-4 text-[var(--chalk-rose)]">{errorMessage}</p>}
-
-      {saveWarning && <p className="mt-4 text-[var(--chalk-rose)]">{saveWarning}</p>}
-
-      {status === "failed" && (
-        <p className="mt-4 text-[var(--chalk-rose)]">
-          Still failing verification after {MAX_REPAIRS} repair attempts. Showing the last attempt
-          below — check the failures listed above before forwarding this to students.
-        </p>
-      )}
-
-      {finalHtml && (
-        <section className="mt-8">
-          <h2 className="mb-2 border-b border-[var(--frame)] pb-1 text-[var(--chalk-dim)]">
-            preview
-          </h2>
-          <div className="mb-3 flex gap-2">
-            <button
-              type="button"
-              onClick={() => setPreviewMode("phone")}
-              className={`min-h-[48px] rounded-md border border-[var(--frame)] px-4 ${
-                previewMode === "phone" ? "bg-[var(--frame)] text-[var(--stone-deep)]" : "text-[var(--chalk)]"
-              }`}
-            >
-              phone
-            </button>
-            <button
-              type="button"
-              onClick={() => setPreviewMode("projector")}
-              className={`min-h-[48px] rounded-md border border-[var(--frame)] px-4 ${
-                previewMode === "projector" ? "bg-[var(--frame)] text-[var(--stone-deep)]" : "text-[var(--chalk)]"
-              }`}
-            >
-              projector
-            </button>
-
-            <button
-              type="button"
-              onClick={toggleSelectMode}
-              className={`min-h-[48px] rounded-md border border-[var(--frame)] px-4 ${
-                selectMode ? "bg-[var(--chalk-rose)] text-[var(--stone-deep)]" : "text-[var(--chalk)]"
-              }`}
-            >
-              {selectMode ? "done pointing" : "point at what is wrong"}
-            </button>
-          </div>
-
-          {selectMode && !selection && (
-            <p className="mb-3 text-sm text-[var(--chalk-dim)]">
-              Tap the part of the material that is wrong.
-            </p>
-          )}
-
-          {selection && (
-            <div className="mb-3 rounded-md border border-[var(--frame)] bg-[var(--stone-deep)] p-3">
-              <p className="mb-2 text-sm text-[var(--chalk-dim)]">
-                You pointed at{" "}
-                <span className="text-[var(--chalk)]">
-                  {selection.label || selection.controlId || selection.role || "this part"}
-                </span>
-              </p>
-              <textarea
-                value={comment}
-                onChange={(e) => setComment(e.target.value)}
-                rows={2}
-                placeholder="What is wrong with it? Say it in your own words."
-                className="w-full rounded-md border border-[var(--frame)] bg-[var(--stone)] p-2 text-[var(--chalk)] placeholder:text-[var(--chalk-dim)] focus:outline-none focus:ring-2 focus:ring-[var(--frame)]"
-              />
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={handleCorrection}
-                  disabled={busy || comment.trim().length < 3}
-                  className="min-h-[48px] rounded-md bg-[var(--frame)] px-5 font-bold text-[var(--stone-deep)] disabled:opacity-50"
-                >
-                  {status === "correcting" ? "fixing…" : "fix this"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelection(null);
-                    setComment("");
-                  }}
-                  disabled={busy}
-                  className="min-h-[48px] rounded-md border border-[var(--frame)] px-5 text-[var(--chalk)] disabled:opacity-50"
-                >
-                  never mind
-                </button>
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        {/* Transcript */}
+        <div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
+          <div className="mx-auto flex max-w-3xl flex-col gap-4">
+            {transcript.length === 0 && (
+              <div className="mt-12 text-center text-[var(--chalk-dim)]">
+                <p className="text-xl text-[var(--chalk)]">What are you teaching?</p>
+                <p className="mt-2 text-sm">
+                  Say it in your own words. Add a photo of the textbook page or the board if it helps.
+                </p>
               </div>
-            </div>
-          )}
+            )}
 
-          {corrections.length > 0 && (
-            <ul className="mb-3 flex flex-col gap-1 text-sm text-[var(--chalk-dim)]">
-              {corrections.map((c) => (
-                <li key={c.id}>
-                  ✓ {c.label || c.controlId || c.role}: “{c.comment}”
-                </li>
-              ))}
-            </ul>
-          )}
+            {transcript.map((item) =>
+              item.kind === "teacher" ? (
+                <div key={item.id} className="flex justify-end">
+                  <div className="max-w-[85%] rounded-lg bg-[var(--stone-deep)] px-4 py-3 text-[var(--chalk)]">
+                    {item.pointer && (
+                      <p className="mb-1 text-xs text-[var(--chalk-dim)]">
+                        about {item.pointer.label || item.pointer.controlId || item.pointer.role}
+                      </p>
+                    )}
+                    {item.attachments.length > 0 && (
+                      <ul className="mb-2 flex flex-wrap gap-2">
+                        {item.attachments.map((a) => (
+                          <li key={a.url} className="h-14 w-14 overflow-hidden rounded-md border border-[var(--frame)]">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={a.url} alt={a.name} className="h-full w-full object-cover" />
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="whitespace-pre-wrap">{item.text}</p>
+                  </div>
+                </div>
+              ) : (
+                <ActivityBlock key={item.id} activity={item.activity} onStop={handleStop} maxRepairs={MAX_REPAIRS} />
+              )
+            )}
 
-          <div className="overflow-auto rounded-lg border-4 border-[var(--frame)] p-2">
-            <iframe
-              ref={previewRef}
-              title="artifact preview"
-              onLoad={() => sendSelectMode(selectMode)}
-              // The artifact carries a click-reporting shim only in the
-              // preview; finalHtml stays pristine for download.
-              srcDoc={injectSelectionShim(finalHtml)}
-              sandbox="allow-scripts"
-              width={previewSize.width}
-              height={previewSize.height}
-              className="mx-auto block bg-white"
-            />
+            {saveWarning && <p className="text-sm text-[var(--chalk-rose)]">{saveWarning}</p>}
           </div>
+        </div>
 
-          <button
-            type="button"
-            onClick={handleDownload}
-            className="mt-4 min-h-[48px] rounded-md bg-[var(--chalk-green)] px-6 font-bold text-[var(--stone-deep)]"
-          >
-            download
-          </button>
-        </section>
-      )}
-    </main>
+        {/* Preview */}
+        {finalHtml && (
+          <aside className="max-h-[50dvh] shrink-0 overflow-y-auto border-t border-[var(--frame)] p-3 md:max-h-none md:w-[460px] md:border-l md:border-t-0">
+            <div className="mb-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setPreviewMode("phone")}
+                className={`min-h-[40px] rounded-md border border-[var(--frame)] px-3 text-sm ${
+                  previewMode === "phone" ? "bg-[var(--frame)] text-[var(--stone-deep)]" : "text-[var(--chalk)]"
+                }`}
+              >
+                phone
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreviewMode("projector")}
+                className={`min-h-[40px] rounded-md border border-[var(--frame)] px-3 text-sm ${
+                  previewMode === "projector" ? "bg-[var(--frame)] text-[var(--stone-deep)]" : "text-[var(--chalk)]"
+                }`}
+              >
+                projector
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectMode((on) => !on)}
+                disabled={busy}
+                className={`min-h-[40px] rounded-md border border-[var(--frame)] px-3 text-sm disabled:opacity-50 ${
+                  selectMode ? "bg-[var(--chalk-rose)] text-[var(--stone-deep)]" : "text-[var(--chalk)]"
+                }`}
+              >
+                {selectMode ? "tap something…" : "point at what is wrong"}
+              </button>
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="ml-auto min-h-[40px] rounded-md bg-[var(--chalk-green)] px-3 text-sm font-bold text-[var(--stone-deep)]"
+              >
+                download
+              </button>
+            </div>
+
+            <div className="overflow-auto rounded-lg border-4 border-[var(--frame)] p-2">
+              <iframe
+                ref={previewRef}
+                title="artifact preview"
+                onLoad={() => sendSelectMode(selectMode)}
+                // The artifact carries a click-reporting shim only in the
+                // preview; finalHtml stays pristine for download.
+                srcDoc={injectSelectionShim(finalHtml)}
+                sandbox="allow-scripts"
+                width={previewSize.width}
+                height={previewSize.height}
+                className="mx-auto block bg-white"
+              />
+            </div>
+          </aside>
+        )}
+      </div>
+
+      <Composer
+        text={text}
+        onTextChange={setText}
+        attachments={attachments}
+        onAddFiles={addFiles}
+        onRemoveAttachment={removeAttachment}
+        pointer={pointer}
+        onClearPointer={() => setPointer(null)}
+        classNumber={classNumber}
+        onClassChange={setClassNumber}
+        language={language}
+        onLanguageChange={setLanguage}
+        onSend={handleSend}
+        busy={busy}
+        started={started}
+      />
+    </div>
   );
 }

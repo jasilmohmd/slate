@@ -2,7 +2,7 @@ import { z } from "zod";
 import sharp from "sharp";
 import { bandFromClass } from "@/lib/band";
 import {
-  buildCorrectionTask,
+  buildRefineTask,
   buildGenerationTask,
   buildMessages,
   buildRepairTask,
@@ -17,13 +17,22 @@ export const dynamic = "force-dynamic";
 // Correction by pointing (§5 step 3): what the teacher tapped, plus what
 // they said about it. Arrives as a JSON string because the rest of this
 // endpoint already speaks multipart/form-data (the photo).
-const CorrectionSchema = z.object({
+const PointerSchema = z.object({
   controlId: z.string().max(200).nullable(),
   role: z.string().max(200).nullable(),
   label: z.string().max(200),
   elementSnippet: z.string().max(4000),
-  comment: z.string().trim().min(3, "Say a little about what's wrong.").max(1000),
 });
+
+// A refinement is what the teacher typed, plus the element they pointed at
+// if they pointed at one. Correction by pointing is the pointer case, not a
+// separate request shape.
+const RefineSchema = z.object({
+  comment: z.string().trim().min(2, "Say a little about what to change.").max(4000),
+  pointer: PointerSchema.nullable().optional(),
+});
+
+const MAX_ATTACHMENTS = 8;
 
 const RequestSchema = z.object({
   goal: z.string().trim().min(3, "Say a bit more about what you're teaching.").max(2000),
@@ -50,15 +59,15 @@ const RequestSchema = z.object({
         return z.NEVER;
       }
     }),
-  correction: z
+  refine: z
     .string()
     .optional()
     .transform((raw, ctx) => {
       if (!raw) return undefined;
       try {
-        return CorrectionSchema.parse(JSON.parse(raw));
+        return RefineSchema.parse(JSON.parse(raw));
       } catch {
-        ctx.addIssue({ code: "custom", message: "Invalid correction payload" });
+        ctx.addIssue({ code: "custom", message: "Invalid refine payload" });
         return z.NEVER;
       }
     }),
@@ -76,6 +85,10 @@ function stripCodeFence(html: string): string {
 
 export async function POST(request: Request) {
   const formData = await request.formData();
+  // Stop in the builder has to reach the model call. Aborting only the
+  // browser fetch leaves OpenAI generating a document nobody will read, and
+  // still billing for it.
+  const clientSignal = request.signal;
   const parsed = RequestSchema.safeParse({
     goal: formData.get("goal"),
     classNumber: formData.get("classNumber"),
@@ -83,7 +96,7 @@ export async function POST(request: Request) {
     previousHtml: formData.get("previousHtml") ?? undefined,
     failureSummary: formData.get("failureSummary") ?? undefined,
     generationId: formData.get("generationId") ?? undefined,
-    correction: formData.get("correction") ?? undefined,
+    refine: formData.get("refine") ?? undefined,
     history: formData.get("history") ?? undefined,
   });
 
@@ -94,13 +107,13 @@ export async function POST(request: Request) {
     );
   }
 
-  const { goal, classNumber, language, previousHtml, failureSummary, correction, history } =
+  const { goal, classNumber, language, previousHtml, failureSummary, refine, history } =
     parsed.data;
-  const isCorrection = !!previousHtml && !!correction;
-  const isRepair = !isCorrection && !!previousHtml && !!failureSummary;
+  const isRefine = !!previousHtml && !!refine;
+  const isRepair = !isRefine && !!previousHtml && !!failureSummary;
   // Either kind of follow-up reuses the existing record rather than starting
   // a new one, so the photo is not re-uploaded below.
-  const isFollowUp = isCorrection || isRepair;
+  const isFollowUp = isRefine || isRepair;
   const band = bandFromClass(classNumber);
   if (band !== "B") {
     return Response.json(
@@ -114,23 +127,33 @@ export async function POST(request: Request) {
     return Response.json({ error: "OPENAI_API_KEY is not configured" }, { status: 500 });
   }
 
-  const photoField = formData.get("photo");
-  let photoBuffer: Buffer | null = null;
-  if (photoField instanceof File && photoField.size > 0) {
-    const original = Buffer.from(await photoField.arrayBuffer());
+  // The composer allows several attachments per turn, so read them all.
+  const photoFields = formData.getAll("photo").filter(
+    (f): f is File => f instanceof File && f.size > 0
+  );
+  const photoBuffers: Buffer[] = [];
+  for (const field of photoFields.slice(0, MAX_ATTACHMENTS)) {
+    const original = Buffer.from(await field.arrayBuffer());
     // Downscale before storage AND before the vision call (§5a) — one pass
     // serves both.
-    photoBuffer = await sharp(original)
-      .rotate()
-      .resize({ width: 1400, withoutEnlargement: true })
-      .jpeg({ quality: 82 })
-      .toBuffer();
+    photoBuffers.push(
+      await sharp(original)
+        .rotate()
+        .resize({ width: 1400, withoutEnlargement: true })
+        .jpeg({ quality: 82 })
+        .toBuffer()
+    );
   }
+  const hasPhotos = photoBuffers.length > 0;
 
   const generationId = parsed.data.generationId ?? globalThis.crypto.randomUUID();
-  const shared = { goal, classNumber, language, hasImage: photoBuffer !== null };
-  const task = isCorrection
-    ? buildCorrectionTask({ ...shared, previousHtml: previousHtml!, correction: correction! })
+  const shared = { goal, classNumber, language, hasImage: hasPhotos };
+  const task = isRefine
+    ? buildRefineTask({
+        ...shared,
+        previousHtml: previousHtml!,
+        refine: { comment: refine!.comment, pointer: refine!.pointer ?? null },
+      })
     : isRepair
       ? buildRepairTask({ ...shared, previousHtml: previousHtml!, failureSummary: failureSummary! })
       : buildGenerationTask(shared);
@@ -138,17 +161,17 @@ export async function POST(request: Request) {
   // Cheap Luna triage decides whether a correction needs the stronger model
   // (§5b). It fails open to "complex", so a classifier outage costs money,
   // never quality.
-  const complexity = isCorrection
-    ? await classifyCorrection(correction!.comment, correction!.elementSnippet)
+  const complexity = isRefine
+    ? await classifyCorrection(refine!.comment, refine!.pointer?.elementSnippet ?? "")
     : null;
 
   // Only a first generation is triaged. A repair already has its own
   // escalation, and a correction is triaged by its own comment above.
   const conceptComplexity =
-    !isCorrection && !isRepair ? await classifyConcept(goal, classNumber) : null;
+    !isRefine && !isRepair ? await classifyConcept(goal, classNumber) : null;
 
-  const job = isCorrection ? "correction" : isRepair ? "repair" : "generate";
-  const model = photoBuffer
+  const job = isRefine ? "correction" : isRepair ? "repair" : "generate";
+  const model = hasPhotos
     ? chooseModel("vision")
     : chooseModel(job, {
         correctionComplexity: complexity ?? undefined,
@@ -160,9 +183,9 @@ export async function POST(request: Request) {
     task,
     history,
     isFollowUp,
-    imageDataUrl: photoBuffer
-      ? `data:image/jpeg;base64,${photoBuffer.toString("base64")}`
-      : null,
+    imageDataUrls: photoBuffers.map(
+      (buffer) => `data:image/jpeg;base64,${buffer.toString("base64")}`
+    ),
   });
 
   const stream = new ReadableStream({
@@ -171,6 +194,7 @@ export async function POST(request: Request) {
       try {
         const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
+          signal: clientSignal,
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${apiKey}`,
@@ -215,27 +239,41 @@ export async function POST(request: Request) {
 
         const finalHtml = stripCodeFence(fullText);
 
-        // The photo only needs uploading once per generation (record source
-        // of truth); repair calls re-send it purely for vision context.
-        let photoPath: string | null = null;
-        if (photoBuffer && !isFollowUp) {
+        // Attachments are stored once, on the turn that introduced them.
+        // A follow-up re-sends them for vision context only.
+        const photoPaths: string[] = [];
+        if (hasPhotos && !isFollowUp) {
           const supabase = createSupabaseServerClient();
-          photoPath = `${generationId}/photo.jpg`;
-          const { error: uploadError } = await supabase.storage
-            .from("uploads")
-            .upload(photoPath, photoBuffer, { contentType: "image/jpeg" });
-          if (uploadError) {
-            throw new Error(`Photo upload failed: ${uploadError.message}`);
+          for (const [index, buffer] of photoBuffers.entries()) {
+            const path = `${generationId}/${Date.now()}-${index}.jpg`;
+            const { error: uploadError } = await supabase.storage
+              .from("uploads")
+              .upload(path, buffer, { contentType: "image/jpeg" });
+            if (uploadError) {
+              throw new Error(`Photo upload failed: ${uploadError.message}`);
+            }
+            photoPaths.push(path);
           }
         }
 
         controller.enqueue(
-          encodeLine({ type: "done", id: generationId, html: finalHtml, photoPath, model, complexity, conceptComplexity })
+          encodeLine({
+            type: "done",
+            id: generationId,
+            html: finalHtml,
+            photoPaths,
+            model,
+            complexity,
+            conceptComplexity,
+          })
         );
       } catch (err) {
-        controller.enqueue(
-          encodeLine({ type: "error", message: err instanceof Error ? err.message : String(err) })
-        );
+        // An abort is the teacher pressing Stop, not a failure to report.
+        if (!clientSignal.aborted) {
+          controller.enqueue(
+            encodeLine({ type: "error", message: err instanceof Error ? err.message : String(err) })
+          );
+        }
       } finally {
         controller.close();
       }

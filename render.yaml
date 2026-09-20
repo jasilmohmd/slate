@@ -9,3 +9,11 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 24.21.0
+      # Default generation model (SPEC.md 5b). Terra scored 10/10 first-pass
+      # Tier 1 on the class 9 parallel-circuits benchmark, clearing the 70%
+      # threshold, so it is the default rather than Sol. Not a secret, so it
+      # lives here; OPENAI_API_KEY, SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
+      # are set in the Render dashboard and must never be committed.
+      # Repair, correction escalation and vision stay on Sol regardless.
+      - key: SLATE_GENERATION_MODEL
+        value: gpt-5.6-terra

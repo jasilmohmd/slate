@@ -18,3 +18,19 @@ body {
   font-family: var(--font-manjari), "Noto Sans Malayalam", sans-serif;
 }
 
+
+/* The one moment of motion in the builder (§5c): the drafting line while
+   the model works, and the checks ticking through as they resolve.
+   Nothing else animates. */
+@keyframes slate-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.slate-pulse {
+  animation: slate-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .slate-pulse { animation: none; }
+}

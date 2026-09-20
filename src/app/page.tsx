@@ -9,6 +9,15 @@ type PreviewMode = "phone" | "projector";
 const CLASS_OPTIONS = [8, 9, 10];
 const MAX_REPAIRS = 3;
 
+// The teacher never sees the artifact source (they do not write code);
+// they see plain language about what is happening, then the checks list
+// ticking through, which is where the real progress detail lives.
+const PROGRESS_COPY: Partial<Record<Status, string>> = {
+  generating: "Drafting your material…",
+  verifying: "Checking it works…",
+  repairing: "Fixing a few things…",
+};
+
 async function callGenerate(params: {
   goal: string;
   classNumber: number;
@@ -17,7 +26,6 @@ async function callGenerate(params: {
   previousHtml?: string;
   failureSummary?: string;
   generationId?: string;
-  onDelta: (text: string) => void;
 }): Promise<{ id: string; html: string; photoPath: string | null }> {
   const formData = new FormData();
   formData.set("goal", params.goal);
@@ -49,9 +57,7 @@ async function callGenerate(params: {
     for (const line of lines) {
       if (!line.trim()) continue;
       const msg = JSON.parse(line);
-      if (msg.type === "delta") {
-        params.onDelta(msg.text);
-      } else if (msg.type === "done") {
+      if (msg.type === "done") {
         result = { id: msg.id, html: msg.html, photoPath: msg.photoPath ?? null };
       } else if (msg.type === "error") {
         throw new Error(msg.message);
@@ -76,7 +82,6 @@ export default function Home() {
   const [language, setLanguage] = useState<"ml" | "en">("ml");
   const [photo, setPhoto] = useState<File | null>(null);
   const [status, setStatus] = useState<Status>("idle");
-  const [streamedText, setStreamedText] = useState("");
   const [checks, setChecks] = useState<CheckResult[]>([]);
   const [attempt, setAttempt] = useState(0);
   const [finalHtml, setFinalHtml] = useState<string | null>(null);
@@ -89,7 +94,6 @@ export default function Home() {
     e.preventDefault();
     if (status === "generating" || status === "verifying" || status === "repairing") return;
 
-    setStreamedText("");
     setChecks([]);
     setFinalHtml(null);
     setErrorMessage(null);
@@ -107,7 +111,6 @@ export default function Home() {
 
       while (true) {
         setStatus(attemptNumber === 0 ? "generating" : "repairing");
-        setStreamedText("");
         const result = await callGenerate({
           goal,
           classNumber,
@@ -116,7 +119,6 @@ export default function Home() {
           previousHtml,
           failureSummary,
           generationId: id,
-          onDelta: (text) => setStreamedText((prev) => prev + text),
         });
         html = result.html;
         id = result.id;
@@ -246,14 +248,12 @@ export default function Home() {
         </div>
       </form>
 
-      {(busy || streamedText) && (
+      {busy && (
         <section className="mt-8">
-          <h2 className="mb-2 border-b border-[var(--frame)] pb-1 text-[var(--chalk-dim)]">
-            generation
-          </h2>
-          <pre className="max-h-64 overflow-auto rounded-md bg-[var(--stone-deep)] p-3 text-xs text-[var(--chalk-dim)]">
-            {streamedText || "waiting for the model…"}
-          </pre>
+          <p className="slate-pulse flex items-center gap-2 text-[var(--chalk)]">
+            <span aria-hidden="true">✎</span>
+            {PROGRESS_COPY[status] ?? "Working…"}
+          </p>
         </section>
       )}
 

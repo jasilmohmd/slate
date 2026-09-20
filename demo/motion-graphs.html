@@ -1,0 +1,872 @@
+<!doctype html>
+<html lang="ml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ക്ലാസ് 9 • Position–time &amp; Velocity–time graphs</title>
+<style>
+
+:root {
+  /* Colour — high contrast, projection-safe (§2a). Never the only signal:
+     pair every colour with shape, label or position in the markup. */
+  --ink: #17211f;
+  --ink-soft: #3f4a47;
+  --paper: #faf8f2;
+  --paper-well: #eeece2;
+  --accent-blue: #1c4f8c;
+  --accent-amber: #8a4a10;
+  --accent-violet: #4a3170;
+  --correct: #1e6b3a;
+  --incorrect: #a02638;
+
+  /* Type scale — handheld default, axis 1 of §2a (<900px) */
+  --text-label: 14px;
+  --text-body: 16px;
+  --text-heading: 20px;
+  --text-title: 24px;
+
+  /* Stroke weight — handheld default */
+  --stroke: 1.5px;
+
+  /* Touch targets (§2a) */
+  --control-min: 48px;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+}
+
+/* Axis 1 — size. Above 900px is always projection-safe, unconditionally:
+   a laptop driving a projector reports as an ordinary desktop viewport, so
+   there is no projector-detection branch anywhere in this file (§2a). This
+   floor applies to ALL text, including in-scene axis labels and units. */
+@media (min-width: 900px) {
+  :root {
+    --text-label: 28px;
+    --text-body: 28px;
+    --text-heading: 40px;
+    --text-title: 56px;
+    --stroke: 3px;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  /* System stack only — artifacts cannot load webfonts (§2). Manjari is
+     builder UI only; Malayalam falls back to whatever the OS ships. */
+  font-family: -apple-system, "Noto Sans Malayalam", "Noto Sans", "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+body {
+  font-size: var(--text-body);
+  line-height: 1.4;
+}
+
+[data-role="meta"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--paper-well);
+  border-bottom: var(--stroke) solid var(--ink);
+  font-size: var(--text-label);
+  color: var(--ink-soft);
+}
+
+[data-role="artifact"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* Axis 2 — aspect, independent of axis 1 (§2a). Portrait stacks the scene
+   above the chrome; landscape puts the scene beside a side rail. */
+@media (orientation: landscape) {
+  [data-role="artifact"] {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+  [data-role="scene"] {
+    flex: 1 1 60%;
+    min-width: 0;
+  }
+  [data-role="chrome"] {
+    flex: 0 0 40%;
+    max-width: 480px;
+    overflow-y: auto;
+  }
+}
+
+[data-role="scene"] {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--paper);
+  overflow: hidden;
+}
+
+[data-role="scene"] svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+[data-role="chrome"] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md);
+}
+
+/* Controls cluster in one region and never need hover to be usable (§2a). */
+[data-role="controls"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+[data-control] {
+  min-width: var(--control-min);
+  min-height: var(--control-min);
+  font-size: var(--text-body);
+  border: var(--stroke) solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: var(--space-xs) var(--space-sm);
+}
+
+[data-role="prediction"],
+[data-role="reveal"],
+[data-role="explanation"] {
+  padding: var(--space-md);
+  border: var(--stroke) solid var(--ink);
+  border-radius: 6px;
+  background: var(--paper-well);
+}
+
+[data-role="reveal"][hidden] {
+  display: none;
+}
+
+/* Units, axis labels and tick values (§2d) share the same projection floor
+   as body text (§2a). */
+[data-text="label"] {
+  font-size: var(--text-label);
+  fill: var(--ink);
+  color: var(--ink);
+}
+
+/* Motion-graph-specific additions. SVG labels are unscaled HTML overlays. */
+[hidden] { display: none !important; }
+h1, h2, p { margin: 0 0 var(--space-sm); }
+h1 { font-size: var(--text-title); line-height: 1.2; }
+h2 { font-size: var(--text-heading); line-height: 1.3; }
+button, select, input, summary { font-family: inherit; }
+button, summary { cursor: pointer; }
+button:disabled, select:disabled { cursor: default; opacity: .65; }
+:focus { outline: 3px solid var(--accent-blue); outline-offset: 3px; }
+
+[data-role="scene"] {
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: var(--space-md);
+}
+
+.scene-heading { width: 100%; }
+.diagram {
+  position: relative;
+  width: 100%;
+  max-width: 1100px;
+}
+.overlay {
+  position: absolute;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  padding: 1px 5px;
+  background: rgba(250, 248, 242, .94);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.top-title { left: 51%; top: 2.5%; }
+.top-y-name {
+  left: 1.8%;
+  top: 27%;
+  transform: translate(-50%, -50%) rotate(-90deg);
+}
+.top-y-high { left: 8.3%; top: 10.5%; }
+.top-y-low { left: 8.3%; top: 41.5%; }
+.top-t-zero { left: 13.2%; top: 46%; }
+.top-t-six { left: 94%; top: 46%; }
+.top-x-name { left: 53%; top: 47.8%; }
+
+.bottom-title { left: 51%; top: 53%; }
+.bottom-y-name {
+  left: 1.8%;
+  top: 77%;
+  transform: translate(-50%, -50%) rotate(-90deg);
+}
+.bottom-y-high { left: 8.3%; top: 60.5%; }
+.bottom-y-low { left: 8.3%; top: 92%; }
+.bottom-t-zero { left: 13.2%; top: 96.2%; }
+.bottom-t-six { left: 94%; top: 96.2%; }
+.bottom-x-name { left: 53%; top: 98.5%; }
+
+.graph-cover {
+  position: absolute;
+  z-index: 3;
+  left: 12.8%;
+  right: 5.5%;
+  top: 57.5%;
+  bottom: 5.8%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-md);
+  border: 3px dashed var(--ink-soft);
+  background: var(--paper-well);
+  text-align: center;
+  font-weight: 700;
+}
+
+.axis, .grid, .zero-line, .position-line, .velocity-line, .marker {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.axis { stroke: var(--ink); stroke-width: 3px; }
+.grid { stroke: #858c88; stroke-width: 3px; stroke-dasharray: 7 7; }
+.zero-line { stroke: var(--ink-soft); stroke-width: 3px; stroke-dasharray: 10 8; }
+.position-line { stroke: var(--accent-blue); stroke-width: 5px; }
+.velocity-line { stroke: var(--accent-amber); stroke-width: 5px; }
+.marker {
+  stroke: var(--accent-violet);
+  stroke-width: 4px;
+  fill: var(--paper);
+}
+.scene-note {
+  width: 100%;
+  margin-top: var(--space-sm);
+  color: var(--ink-soft);
+}
+.field { width: 100%; }
+.field label { display: block; margin-bottom: var(--space-xs); }
+input[type="range"] {
+  display: block;
+  width: 100%;
+  padding: 0;
+  accent-color: var(--accent-blue);
+}
+.range-ends {
+  display: flex;
+  justify-content: space-between;
+}
+.full { width: 100%; }
+select { width: 100%; margin: var(--space-sm) 0; }
+details p { margin-top: var(--space-sm); }
+summary { line-height: 1.4; }
+#commit { background: var(--accent-blue); color: var(--paper); }
+#commit:disabled { background: var(--ink-soft); }
+#feedback {
+  border-left: 5px solid var(--ink);
+  padding-left: var(--space-sm);
+}
+#feedback.correct { border-color: var(--correct); }
+#feedback.incorrect { border-color: var(--incorrect); }
+.readouts { margin: var(--space-md) 0; }
+.readout-row {
+  padding: var(--space-sm) 0;
+  border-bottom: 3px solid var(--ink-soft);
+}
+.readout-row strong { display: block; }
+.readout-row span {
+  display: inline-block;
+  margin-right: var(--space-sm);
+}
+.equation {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm) var(--space-md);
+}
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+.legend-line {
+  display: inline-block;
+  width: 42px;
+  height: 0;
+  border-top: 5px solid var(--accent-blue);
+}
+.legend-line.velocity {
+  border-top-color: var(--accent-amber);
+  border-top-style: dashed;
+}
+#phase { font-weight: 700; }
+#hint { margin: var(--space-sm) 0; }
+
+@media (min-width: 900px) {
+  .scene-note { font-size: var(--text-label); }
+  .graph-cover { border-width: 4px; }
+}
+</style>
+</head>
+<body>
+<header data-role="meta">
+  <span>ക്ലാസ് 9 • ഭൗതികശാസ്ത്രം</span>
+  <span>Motion • Position–time &amp; Velocity–time graphs</span>
+</header>
+
+<main data-role="artifact">
+  <section data-role="scene" data-intrinsic-aspect="1.3333" data-min-aspect="0.65" aria-labelledby="scene-title">
+    <div class="scene-heading">
+      <h1 id="scene-title">ഒരേ motion, രണ്ട് graphs</h1>
+      <p id="scene-status">മുകളിലെ position–time graph നോക്കി ആദ്യം പ്രവചിക്കൂ.</p>
+    </div>
+
+    <div class="diagram">
+      <svg viewBox="0 0 720 540" role="img" aria-labelledby="svg-title svg-description">
+        <title id="svg-title">ഒരേ motion-ന്റെ position–time, velocity–time graphs</title>
+        <desc id="svg-description">മുകളിലെ position–time graph ആദ്യം കാണാം. വിദ്യാർത്ഥി പ്രവചനം ഉറപ്പിച്ച ശേഷം താഴെയുള്ള velocity–time graph വെളിപ്പെടും.</desc>
+
+        <rect x="92" y="48" width="588" height="190" rx="5" fill="var(--paper)" stroke="var(--ink)" stroke-width="3" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="190" y1="48" x2="190" y2="238" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="288" y1="48" x2="288" y2="238" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="386" y1="48" x2="386" y2="238" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="484" y1="48" x2="484" y2="238" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="582" y1="48" x2="582" y2="238" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="92" y1="95.5" x2="680" y2="95.5" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="92" y1="143" x2="680" y2="143" vector-effect="non-scaling-stroke"/>
+        <line class="grid" x1="92" y1="190.5" x2="680" y2="190.5" vector-effect="non-scaling-stroke"/>
+        <line id="position-zero" class="zero-line" x1="92" y1="143" x2="680" y2="143" vector-effect="non-scaling-stroke"/>
+        <polyline id="position-path" class="position-line" points="" vector-effect="non-scaling-stroke"/>
+        <circle id="position-end" class="marker" cx="680" cy="143" r="8" vector-effect="non-scaling-stroke"/>
+
+        <g id="velocity-graph" style="display:none">
+          <rect x="92" y="318" width="588" height="190" rx="5" fill="var(--paper)" stroke="var(--ink)" stroke-width="3" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="190" y1="318" x2="190" y2="508" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="288" y1="318" x2="288" y2="508" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="386" y1="318" x2="386" y2="508" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="484" y1="318" x2="484" y2="508" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="582" y1="318" x2="582" y2="508" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="92" y1="365.5" x2="680" y2="365.5" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="92" y1="413" x2="680" y2="413" vector-effect="non-scaling-stroke"/>
+          <line class="grid" x1="92" y1="460.5" x2="680" y2="460.5" vector-effect="non-scaling-stroke"/>
+          <line id="velocity-zero" class="zero-line" x1="92" y1="413" x2="680" y2="413" vector-effect="non-scaling-stroke"/>
+          <polyline id="velocity-path" class="velocity-line" points="" vector-effect="non-scaling-stroke"/>
+          <circle id="velocity-end" class="marker" cx="680" cy="413" r="8" vector-effect="non-scaling-stroke"/>
+        </g>
+      </svg>
+
+      <span class="overlay top-title" data-text="label">Position–time graph</span>
+      <span class="overlay top-y-name" data-text="label">position s (m)</span>
+      <span class="overlay top-y-high" id="position-high" data-text="label"></span>
+      <span class="overlay top-y-low" id="position-low" data-text="label"></span>
+      <span class="overlay top-t-zero" data-text="label">0 s</span>
+      <span class="overlay top-t-six" data-text="label">6 s</span>
+      <span class="overlay top-x-name" data-text="label">time t (s)</span>
+
+      <span class="overlay bottom-title velocity-label" hidden data-text="label">Velocity–time graph</span>
+      <span class="overlay bottom-y-name velocity-label" hidden data-text="label">velocity v (m/s)</span>
+      <span class="overlay bottom-y-high velocity-label" id="velocity-high" hidden data-text="label"></span>
+      <span class="overlay bottom-y-low velocity-label" id="velocity-low" hidden data-text="label"></span>
+      <span class="overlay bottom-t-zero velocity-label" hidden data-text="label">0 s</span>
+      <span class="overlay bottom-t-six velocity-label" hidden data-text="label">6 s</span>
+      <span class="overlay bottom-x-name velocity-label" hidden data-text="label">time t (s)</span>
+
+      <div class="graph-cover" id="graph-cover">
+        <span>Velocity–time graph പ്രവചനം ഉറപ്പിച്ചതിന് ശേഷം മാത്രം കാണാം.</span>
+      </div>
+    </div>
+
+    <div class="legend" aria-label="Graph line key">
+      <span class="legend-item"><span class="legend-line"></span><span>solid line: position</span></span>
+      <span class="legend-item velocity-legend" hidden><span class="legend-line velocity"></span><span>dashed key: velocity graph</span></span>
+    </div>
+
+    <p class="scene-note equation" data-text="label">s(t) = ut + ½at² • v(t) = u + at</p>
+  </section>
+
+  <section data-role="chrome">
+    <div data-role="controls">
+      <h2 class="full">Motion സജ്ജമാക്കൂ</h2>
+
+      <div class="field">
+        <label for="initial-velocity">Initial velocity:
+          <output id="initial-value" for="initial-velocity" data-text="label">u = 4.0 m/s</output>
+        </label>
+        <input type="range" id="initial-velocity" data-control="initial-velocity" min="-6" max="10" step="0.5" value="4">
+        <div class="range-ends">
+          <span data-text="label">−6 m/s</span>
+          <span data-text="label">10 m/s</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="acceleration">Acceleration:
+          <output id="acceleration-value" for="acceleration" data-text="label">a = −1.0 m/s²</output>
+        </label>
+        <input type="range" id="acceleration" data-control="acceleration" min="-3" max="3" step="0.5" value="-1">
+        <div class="range-ends">
+          <span data-text="label">−3 m/s²</span>
+          <span data-text="label">3 m/s²</span>
+        </div>
+      </div>
+
+      <p id="phase" class="full">ഘട്ടം 1: position graph-ൽ നിന്ന് പ്രവചിക്കുക</p>
+      <button type="button" id="reset" data-control="new-prediction" class="full">പുതിയ പ്രവചനം തുടങ്ങൂ</button>
+    </div>
+
+    <div data-role="prediction">
+      <h2><span data-text="label">t = 6 s</span>-ൽ എന്ത് സംഭവിക്കും?</h2>
+      <p>മുകളിലെ graph-ന്റെ അവസാന ഭാഗത്തെ slope ശ്രദ്ധിക്കൂ. ആ സമയത്ത് object-ന്റെ velocity ഏത് തരത്തിലായിരിക്കും?</p>
+
+      <label for="prediction-choice">എന്റെ പ്രവചനം:</label>
+      <select id="prediction-choice" data-control="prediction-choice">
+        <option value="">ഒന്ന് തിരഞ്ഞെടുക്കൂ…</option>
+        <option value="positive">v positive — positive direction-ൽ നീങ്ങുന്നു</option>
+        <option value="zero">v = 0 — ആ നിമിഷം നിശ്ചലമാണ്</option>
+        <option value="negative">v negative — negative direction-ൽ നീങ്ങുന്നു</option>
+      </select>
+
+      <button type="button" id="commit" data-control="commit-prediction" class="full" disabled>ഉറപ്പിച്ച് velocity graph കാണൂ</button>
+      <p id="prediction-status" role="status">തിരഞ്ഞെടുക്കുന്നതുവരെ velocity graph മറച്ചിരിക്കും.</p>
+    </div>
+
+    <div data-role="reveal" id="reveal" hidden>
+      <h2>പ്രവചനത്തിന്റെ ഫലം</h2>
+      <p id="feedback" role="status" data-text="label"></p>
+      <p id="motion-consequence"></p>
+
+      <details class="responsive-details" open>
+        <summary data-control="prediction-reasoning">Graph-ുകൾ എങ്ങനെ ബന്ധപ്പെട്ടു?</summary>
+        <p id="reason"></p>
+      </details>
+
+      <button type="button" id="hint-button" data-control="request-hint" class="full" aria-expanded="false" aria-controls="hint">ഒരു സൂചന വേണം</button>
+      <p id="hint" hidden></p>
+
+      <div class="readouts" aria-label="Motion values">
+        <h2>ഒരേ motion-ന്റെ values</h2>
+        <div class="readout-row">
+          <strong>ആരംഭം</strong>
+          <span id="u-readout" data-text="label"></span>
+          <span id="a-readout" data-text="label"></span>
+        </div>
+        <div class="readout-row">
+          <strong data-text="label">t = 6 s</strong>
+          <span id="s-readout" data-text="label"></span>
+          <span id="v-readout" data-text="label"></span>
+        </div>
+        <p id="live-law" class="equation" data-text="label"></p>
+      </div>
+
+      <p>ഇനി sliders നീക്കൂ. രണ്ട് graphs-ഉം ഒരേ motion അനുസരിച്ച് ഉടൻ മാറും. Position graph-ന്റെ slope-ഉം velocity graph-ന്റെ height-ഉം താരതമ്യം ചെയ്യൂ.</p>
+    </div>
+
+    <div data-role="explanation">
+      <details class="responsive-details" open>
+        <summary data-control="learning-guide">ചെയ്യേണ്ടത് / പ്രധാന ആശയം</summary>
+        <p>Sliders ഉപയോഗിച്ച് initial velocity, acceleration എന്നിവ മാറ്റൂ. മുകളിലെ position–time graph മാത്രം നോക്കി അവസാന നിമിഷത്തിലെ velocity-യുടെ sign പ്രവചിച്ച് ഉറപ്പിക്കൂ.</p>
+        <p>Result കണ്ടശേഷം ഒരേ സമയത്ത് position graph-ന്റെ slope എങ്ങനെയാണെന്നും velocity graph-ന്റെ vertical value എത്രയാണെന്നും താരതമ്യം ചെയ്യൂ.</p>
+
+        <p><strong>പ്രധാന ബന്ധം:</strong> Position–time graph-ന്റെ slope ആണ് velocity. Graph ഉയരത്തിലാണോ താഴെയാണോ എന്നത് മാത്രം നോക്കരുത്; ആ സമയത്ത് line ഏത് ദിശയിലേക്ക് ചരിയുന്നു എന്നതാണ് പ്രധാനപ്പെട്ടത്.</p>
+        <p class="equation" data-text="label">velocity = position–time graph-ന്റെ slope = Δs/Δt</p>
+        <p>Position graph മുകളിലേക്ക് ചരിയുമ്പോൾ velocity positive. Horizontal tangent ആകുമ്പോൾ velocity zero. താഴേക്ക് ചരിയുമ്പോൾ velocity negative.</p>
+        <p>Velocity–time graph-ൽ line-ന്റെ height തന്നെയാണ് velocity. അതിന്റെ slope acceleration ആണ്.</p>
+        <p class="equation" data-text="label">acceleration = velocity–time graph-ന്റെ slope = Δv/Δt</p>
+        <p>ഇവിടെ “distance–time graph” എന്ന് classroom-ൽ പറയാറുണ്ടെങ്കിലും, negative direction-ഉം തിരിഞ്ഞുള്ള motion-ഉം കാണിക്കാൻ ഉപയോഗിക്കുന്നത് കൃത്യമായി <strong>position–time graph</strong> ആണ്. Distance ഒരിക്കലും കുറയില്ല; position കുറയാം.</p>
+        <p>Model constant acceleration ആണ്. Air resistance, road friction തുടങ്ങിയവ ഇവിടെ ഉൾപ്പെടുത്തിയിട്ടില്ല.</p>
+        <p>ഈ file പൂർണ്ണമായി offline-ൽ പ്രവർത്തിക്കും. വിവരങ്ങൾ ശേഖരിക്കുകയോ അയയ്ക്കുകയോ ചെയ്യുന്നില്ല.</p>
+      </details>
+    </div>
+
+    <noscript>ഈ simulation പ്രവർത്തിക്കാൻ browser-ൽ JavaScript അനുവദിക്കണം. Internet ആവശ്യമില്ല.</noscript>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  function el(id) {
+    return document.getElementById(id);
+  }
+
+  var initial = el('initial-velocity');
+  var acceleration = el('acceleration');
+  var choice = el('prediction-choice');
+  var commit = el('commit');
+  var reveal = el('reveal');
+  var committed = false;
+  var projection = window.matchMedia('(min-width: 900px)');
+
+  function number(value) {
+    var n = Number(value);
+    if (Math.abs(n) < 0.0000001) {
+      n = 0;
+    }
+    return n.toFixed(1);
+  }
+
+  function signedNumber(value) {
+    var n = Number(value);
+    if (Math.abs(n) < 0.0000001) {
+      n = 0;
+    }
+    return n.toFixed(1).replace('-', '−');
+  }
+
+  function model(u, a, t) {
+    return {
+      position: u * t + 0.5 * a * t * t,
+      velocity: u + a * t
+    };
+  }
+
+  function setInstructionDensity() {
+    var sections = document.querySelectorAll('.responsive-details');
+    var i;
+    for (i = 0; i < sections.length; i++) {
+      sections[i].open = !projection.matches;
+    }
+  }
+
+  function scaleRange(values) {
+    var minimum = 0;
+    var maximum = 0;
+    var i;
+    var span;
+    var padding;
+
+    for (i = 0; i < values.length; i++) {
+      minimum = Math.min(minimum, values[i]);
+      maximum = Math.max(maximum, values[i]);
+    }
+
+    span = maximum - minimum;
+    if (span < 2) {
+      span = 2;
+    }
+    padding = span * 0.12;
+
+    return {
+      minimum: minimum - padding,
+      maximum: maximum + padding
+    };
+  }
+
+  function yPosition(value, range, top, height) {
+    return top + (range.maximum - value) /
+      (range.maximum - range.minimum) * height;
+  }
+
+  function buildGraphs() {
+    var u = Number(initial.value);
+    var a = Number(acceleration.value);
+    var positionValues = [];
+    var velocityValues = [];
+    var positionPoints = [];
+    var velocityPoints = [];
+    var samples = 60;
+    var left = 92;
+    var width = 588;
+    var topOne = 48;
+    var topTwo = 318;
+    var height = 190;
+    var i;
+    var t;
+    var x;
+    var motion;
+    var positionRange;
+    var velocityRange;
+    var yOne;
+    var yTwo;
+    var positionZero;
+    var velocityZero;
+
+    for (i = 0; i <= samples; i++) {
+      t = 6 * i / samples;
+      motion = model(u, a, t);
+      positionValues.push(motion.position);
+      velocityValues.push(motion.velocity);
+    }
+
+    positionRange = scaleRange(positionValues);
+    velocityRange = scaleRange(velocityValues);
+
+    for (i = 0; i <= samples; i++) {
+      t = 6 * i / samples;
+      x = left + width * i / samples;
+      yOne = yPosition(positionValues[i], positionRange, topOne, height);
+      yTwo = yPosition(velocityValues[i], velocityRange, topTwo, height);
+      positionPoints.push(x.toFixed(1) + ',' + yOne.toFixed(1));
+      velocityPoints.push(x.toFixed(1) + ',' + yTwo.toFixed(1));
+    }
+
+    positionZero = yPosition(0, positionRange, topOne, height);
+    velocityZero = yPosition(0, velocityRange, topTwo, height);
+
+    el('position-path').setAttribute('points', positionPoints.join(' '));
+    el('velocity-path').setAttribute('points', velocityPoints.join(' '));
+
+    el('position-zero').setAttribute('y1', positionZero.toFixed(1));
+    el('position-zero').setAttribute('y2', positionZero.toFixed(1));
+    el('velocity-zero').setAttribute('y1', velocityZero.toFixed(1));
+    el('velocity-zero').setAttribute('y2', velocityZero.toFixed(1));
+
+    el('position-end').setAttribute('cy',
+      yPosition(positionValues[samples], positionRange, topOne, height).toFixed(1));
+    el('velocity-end').setAttribute('cy',
+      yPosition(velocityValues[samples], velocityRange, topTwo, height).toFixed(1));
+
+    el('position-high').textContent = signedNumber(positionRange.maximum) + ' m';
+    el('position-low').textContent = signedNumber(positionRange.minimum) + ' m';
+    el('velocity-high').textContent = signedNumber(velocityRange.maximum) + ' m/s';
+    el('velocity-low').textContent = signedNumber(velocityRange.minimum) + ' m/s';
+  }
+
+  function updateInputs() {
+    var u = Number(initial.value);
+    var a = Number(acceleration.value);
+
+    el('initial-value').textContent = 'u = ' + signedNumber(u) + ' m/s';
+    el('acceleration-value').textContent = 'a = ' + signedNumber(a) + ' m/s²';
+    initial.setAttribute('aria-valuetext', signedNumber(u) + ' metres per second');
+    acceleration.setAttribute('aria-valuetext',
+      signedNumber(a) + ' metres per second squared');
+
+    if (!committed) {
+      commit.disabled = !choice.value;
+    }
+
+    buildGraphs();
+  }
+
+  function updateLive() {
+    var u;
+    var a;
+    var result;
+
+    if (!committed) {
+      return;
+    }
+
+    u = Number(initial.value);
+    a = Number(acceleration.value);
+    result = model(u, a, 6);
+
+    el('u-readout').textContent = 'u = ' + signedNumber(u) + ' m/s';
+    el('a-readout').textContent = 'a = ' + signedNumber(a) + ' m/s²';
+    el('s-readout').textContent = 's = ' + signedNumber(result.position) + ' m';
+    el('v-readout').textContent = 'v = ' + signedNumber(result.velocity) + ' m/s';
+    el('live-law').textContent = 'v = u + at = ' +
+      signedNumber(u) + ' m/s + (' + signedNumber(a) +
+      ' m/s² × 6 s) = ' + signedNumber(result.velocity) + ' m/s';
+  }
+
+  function showVelocityGraph(show) {
+    var labels = document.querySelectorAll('.velocity-label');
+    var legends = document.querySelectorAll('.velocity-legend');
+    var i;
+
+    el('velocity-graph').style.display = show ? '' : 'none';
+    el('graph-cover').hidden = show;
+
+    for (i = 0; i < labels.length; i++) {
+      labels[i].hidden = !show;
+    }
+    for (i = 0; i < legends.length; i++) {
+      legends[i].hidden = !show;
+    }
+  }
+
+  function lockOutcome() {
+    committed = false;
+    reveal.hidden = true;
+    showVelocityGraph(false);
+    choice.disabled = false;
+    choice.value = '';
+    commit.disabled = true;
+    el('hint').hidden = true;
+    el('hint').textContent = '';
+    el('hint-button').setAttribute('aria-expanded', 'false');
+    el('feedback').textContent = '';
+    el('feedback').className = '';
+    el('motion-consequence').textContent = '';
+    el('reason').textContent = '';
+    el('phase').textContent = 'ഘട്ടം 1: position graph-ൽ നിന്ന് പ്രവചിക്കുക';
+    el('prediction-status').textContent =
+      'തിരഞ്ഞെടുക്കുന്നതുവരെ velocity graph മറച്ചിരിക്കും.';
+    el('scene-status').textContent =
+      'മുകളിലെ position–time graph നോക്കി ആദ്യം പ്രവചിക്കൂ.';
+    updateInputs();
+  }
+
+  function predictionType(velocity) {
+    if (Math.abs(velocity) < 0.0000001) {
+      return 'zero';
+    }
+    return velocity > 0 ? 'positive' : 'negative';
+  }
+
+  function directionWords(type) {
+    if (type === 'positive') {
+      return 'positive';
+    }
+    if (type === 'negative') {
+      return 'negative';
+    }
+    return 'zero';
+  }
+
+  function motionDescription(u, a, endVelocity) {
+    var turningTime;
+
+    if (Math.abs(endVelocity) < 0.0000001) {
+      return 'കണ്ട motion: ' + number(6) +
+        ' s-ൽ object ഒരു turning point-ൽ എത്തി; ആ നിമിഷം velocity zero ആണ്.';
+    }
+
+    if (Math.abs(a) > 0.0000001) {
+      turningTime = -u / a;
+      if (turningTime > 0 && turningTime < 6) {
+        return 'കണ്ട motion: object ആദ്യം ഒരു ദിശയിൽ നീങ്ങി, ' +
+          signedNumber(turningTime) +
+          ' s-ൽ നിമിഷ നേരം നിന്നു, പിന്നെ ദിശ മാറ്റി.';
+      }
+    }
+
+    if (endVelocity > 0) {
+      return 'കണ്ട motion: അവസാന നിമിഷത്തിൽ object positive direction-ൽ നീങ്ങുന്നു.';
+    }
+
+    return 'കണ്ട motion: അവസാന നിമിഷത്തിൽ object negative direction-ൽ നീങ്ങുന്നു.';
+  }
+
+  initial.addEventListener('input', function () {
+    if (!committed) {
+      choice.value = '';
+      el('prediction-status').textContent =
+        'Graph മാറി. പുതിയ graph-നുള്ള പ്രവചനം തിരഞ്ഞെടുക്കൂ.';
+    }
+    updateInputs();
+    updateLive();
+  });
+
+  acceleration.addEventListener('input', function () {
+    if (!committed) {
+      choice.value = '';
+      el('prediction-status').textContent =
+        'Graph മാറി. പുതിയ graph-നുള്ള പ്രവചനം തിരഞ്ഞെടുക്കൂ.';
+    }
+    updateInputs();
+    updateLive();
+  });
+
+  choice.addEventListener('change', function () {
+    commit.disabled = committed || !choice.value;
+  });
+
+  commit.addEventListener('click', function () {
+    var u;
+    var a;
+    var result;
+    var actual;
+    var correct;
+    var selected;
+
+    if (committed || !choice.value) {
+      return;
+    }
+
+    u = Number(initial.value);
+    a = Number(acceleration.value);
+    result = model(u, a, 6);
+    actual = predictionType(result.velocity);
+    selected = choice.value;
+    correct = selected === actual;
+
+    committed = true;
+    choice.disabled = true;
+    commit.disabled = true;
+
+    el('feedback').className = correct ? 'correct' : 'incorrect';
+    el('feedback').textContent =
+      'കണ്ടത്: v(6 s) = ' + signedNumber(result.velocity) +
+      ' m/s. ' + (correct ? '✓ പ്രവചനം ശരി. ' : '✗ പ്രവചനം പൊരുത്തപ്പെട്ടില്ല. ') +
+      'നിങ്ങളുടെ prediction “' + directionWords(selected) +
+      '”; graph കാണിക്കുന്നത് “' + directionWords(actual) + '”.';
+
+    el('motion-consequence').textContent =
+      motionDescription(u, a, result.velocity);
+
+    if (actual === 'positive') {
+      el('reason').textContent =
+        'Position–time graph-ന്റെ അവസാന ഭാഗം മുകളിലേക്ക് ചരിയുന്നു. അതിനാൽ അവിടത്തെ slope positive ആണ്. Slope തന്നെയാണ് velocity; അതേ സമയത്ത് velocity–time graph zero line-ന്റെ മുകളിലായിരിക്കും.';
+    } else if (actual === 'negative') {
+      el('reason').textContent =
+        'Position–time graph-ന്റെ അവസാന ഭാഗം താഴേക്ക് ചരിയുന്നു. അതിനാൽ അവിടത്തെ slope negative ആണ്. Slope തന്നെയാണ് velocity; അതേ സമയത്ത് velocity–time graph zero line-ന്റെ താഴെയായിരിക്കും.';
+    } else {
+      el('reason').textContent =
+        'Position–time graph-ന് അവസാന നിമിഷത്തിൽ horizontal tangent ആണ്. അതിനാൽ slope zero; അതേ സമയത്ത് velocity–time graph zero line-ൽ എത്തുന്നു.';
+    }
+
+    reveal.hidden = false;
+    showVelocityGraph(true);
+    el('phase').textContent = 'ഘട്ടം 2: രണ്ട് graphs-ഉം ബന്ധിപ്പിക്കുക';
+    el('prediction-status').textContent =
+      'പ്രവചനം ഉറപ്പിച്ചു. Velocity graph ഇപ്പോൾ കാണാം.';
+    el('scene-status').textContent =
+      'ഒരേ സമയത്ത് position graph-ന്റെ slope-ഉം velocity graph-ന്റെ height-ഉം താരതമ്യം ചെയ്യൂ.';
+    updateLive();
+  });
+
+  el('hint-button').addEventListener('click', function () {
+    var open;
+
+    if (!committed) {
+      return;
+    }
+
+    open = el('hint').hidden;
+    if (open) {
+      el('hint').textContent =
+        'Position graph-ന്റെ അവസാന point എത്ര ഉയരത്തിലാണ് എന്നതല്ല നോക്കേണ്ടത്. അവസാന ഭാഗത്ത് ഇടത്തുനിന്ന് വലത്തേക്ക് പോകുമ്പോൾ line മുകളിലേക്കാണോ, horizontal ആണോ, താഴേക്കാണോ ചരിയുന്നത് എന്ന് നോക്കൂ.';
+    }
+
+    el('hint').hidden = !open;
+    el('hint-button').setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+
+  el('reset').addEventListener('click', function () {
+    initial.value = '4';
+    acceleration.value = '-1';
+    lockOutcome();
+  });
+
+  if (projection.addEventListener) {
+    projection.addEventListener('change', setInstructionDensity);
+  } else {
+    projection.addListener(setInstructionDensity);
+  }
+
+  updateInputs();
+  showVelocityGraph(false);
+  setInstructionDensity();
+}());
+</script>
+</body>
+</html>

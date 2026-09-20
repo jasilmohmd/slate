@@ -136,3 +136,27 @@
   confirmed against the already-generated "failing" artifact at zero
   additional API cost before re-testing live.
 
+## Step 5 — final deploy, README, demo artifacts
+
+- Incident: after pushing the step 0–4 commits, the live site kept serving
+  the step-0 placeholder for ~20 minutes with no visible error. Auto-Deploy
+  was already correctly set to "On Commit" in Render's dashboard — the
+  actual cause was simply that no deploy had been *triggered* yet for
+  reasons unclear from outside the dashboard (possibly the Blueprint-created
+  service needed its first manual nudge). Resolved with a manual "Deploy
+  latest commit." Takeaway: don't assume a push reached a deployed service
+  just because the dashboard's settings look correct — check the deploy
+  history's actual timestamp and commit hash before spending more time
+  debugging the application itself.
+- Two demo artifacts pre-generated and exported to `demo/` for the §6 demo
+  safety requirement (recoverable if the venue network or live deploy
+  fails): `parallel-series-circuits.html` (the step-2 reference artifact,
+  re-exported, zero extra cost) and `motion-graphs.html` (a fresh Band B
+  concept run through the real generate→verify→repair pipeline against the
+  *deployed* production site specifically, to confirm Render's environment
+  — not just localhost — actually works end to end: OpenAI call, Tier 1
+  verification in the browser, Supabase persistence). Both passed
+  verification before being saved.
+- `demo/REHEARSAL.md` written for the human presenter — a rehearsal
+  checklist, not something this agent can do on the user's behalf.
+

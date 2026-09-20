@@ -27,12 +27,39 @@ const CorrectionSchema = z.object({
   model: z.string(),
 });
 
+const PointerSchema = z.object({
+  controlId: z.string().nullable(),
+  role: z.string().nullable(),
+  label: z.string(),
+  elementSnippet: z.string(),
+});
+
+// One turn of the session transcript. Generalises corrections: a pointed-at
+// correction is just a refine turn that carries a pointer.
+const TurnSchema = z.object({
+  id: z.string(),
+  at: z.string(),
+  role: z.enum(["teacher", "slate"]),
+  kind: z.enum(["goal", "refine", "correction", "result"]),
+  text: z.string().max(8000),
+  pointer: PointerSchema.nullable().optional(),
+  attachments: z.array(z.string()).max(8).optional(),
+  model: z.string().optional(),
+  complexity: z.string().nullable().optional(),
+  verification: z
+    .object({ passed: z.boolean(), attempts: z.number().int() })
+    .nullable()
+    .optional(),
+});
+
 const BodySchema = z.object({
   id: z.string().uuid(),
   goal: z.string().min(1),
   classNumber: z.number().int(),
   language: z.enum(["ml", "en"]),
-  photoPath: z.string().nullable(),
+  photoPath: z.string().nullable().optional(),
+  photoPaths: z.array(z.string()).max(32).optional(),
+  conceptComplexity: z.enum(["simple", "standard", "dense"]).nullable().optional(),
   artifactHtml: z.string().min(1),
   verification: z.object({
     passed: z.boolean(),
@@ -43,6 +70,8 @@ const BodySchema = z.object({
   // so this route stays stateless — no read-modify-write race between
   // concurrent correction rounds.
   corrections: z.array(CorrectionSchema).optional(),
+  /** The session transcript. Supersedes corrections; see the schema notes. */
+  turns: z.array(TurnSchema).max(200).optional(),
 });
 
 export async function POST(request: Request) {
@@ -51,8 +80,19 @@ export async function POST(request: Request) {
     return Response.json({ error: parsed.error.issues[0]?.message ?? "Invalid input" }, { status: 400 });
   }
 
-  const { id, goal, classNumber, language, photoPath, artifactHtml, verification, corrections } =
-    parsed.data;
+  const {
+    id,
+    goal,
+    classNumber,
+    language,
+    photoPath,
+    photoPaths,
+    conceptComplexity,
+    artifactHtml,
+    verification,
+    corrections,
+    turns,
+  } = parsed.data;
   const band = bandFromClass(classNumber);
 
   const supabase = createSupabaseServerClient();
@@ -65,7 +105,18 @@ export async function POST(request: Request) {
       concept: goal,
       band,
       language,
-      record: { goal, classNumber, language, photoPath, corrections: corrections ?? [] },
+      record: {
+        goal,
+        classNumber,
+        language,
+        // photoPath is kept alongside photoPaths so rows written before
+        // multi-attachment support stay readable without a migration.
+        photoPath: photoPath ?? photoPaths?.[0] ?? null,
+        photoPaths: photoPaths ?? (photoPath ? [photoPath] : []),
+        conceptComplexity: conceptComplexity ?? null,
+        corrections: corrections ?? [],
+        turns: turns ?? [],
+      },
       artifact_html: artifactHtml,
       verification,
     },

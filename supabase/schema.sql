@@ -5,17 +5,30 @@
 --
 -- record jsonb:
 --   {
---     goal, classNumber, language, photoPath,
---     corrections: [                          -- append-only, may be absent
---       { id, atRound, controlId, role, label,
---         elementSnippet, comment,
---         complexity,                         -- Luna triage: simple | complex
---         model }                             -- which model handled it
---     ]
+--     goal, classNumber, language,
+--     photoPaths: ["<id>/1.jpg", ...],        -- was photoPath (singular)
+--     photoPath,                              -- kept: first attachment, for
+--                                             --   readers written before v3
+--     conceptComplexity,                      -- Luna: simple|standard|dense
+--     turns: [                                -- the session transcript
+--       { id, at,
+--         role: "teacher" | "slate",
+--         kind: "goal" | "refine" | "correction" | "result",
+--         text,
+--         pointer: { controlId, role, label, elementSnippet } | null,
+--         attachments: ["<id>/1.jpg"],
+--         model, complexity,
+--         verification: { passed, attempts } }
+--     ],
+--     corrections: [ ... ]                    -- superseded by turns; still
+--                                             --   written and still read for
+--                                             --   rows created before v3
 --   }
 --
--- Additive only — rows written before corrections existed stay valid, so no
--- migration is needed for the jsonb shape itself.
+-- Additive only, in both directions. Rows written before corrections or turns
+-- existed stay valid: GET /api/sessions/[id] synthesises a transcript from
+-- corrections[] when turns[] is absent (see src/lib/session.ts), so no
+-- migration is needed for the jsonb shape at any point.
 create table generations (
   id uuid primary key default gen_random_uuid(),
   created_at timestamptz default now(),

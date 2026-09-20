@@ -24,12 +24,12 @@ The constraints that make this hard are not the generation itself:
 Slate is an agentic pipeline, not a single prompt.
 
 1. **Generate.** The teacher's goal, class and language are sent with a fixed contract preamble and one hand-verified reference artifact, so every generation inherits a known-good structure instead of inventing one.
-2. **Verify, in the teacher's own browser.** The artifact is loaded into a hidden sandboxed iframe and checked against the DOM contract, offline-safety, script errors, contrast, overflow and projection legibility at three real viewports. Verification never runs on the server — there is no headless browser anywhere in the deployed service.
+2. **Verify, in the teacher's own browser.** The artifact is loaded into a hidden sandboxed iframe and checked against the DOM contract, offline-safety, script errors, contrast, overflow, projection legibility, label collisions and scene crowding at three real viewports. Verification never runs on the server — there is no headless browser anywhere in the deployed service.
 3. **Repair automatically.** A failure is fed back as a named, specific correction ("projection text below 28px"), not a generic retry. Capped at 3 attempts.
-4. **Correct by pointing.** The teacher taps the part of the rendered artifact that is wrong and describes the problem in their own words. Slate regenerates just that part, re-verifies the result, and only then replaces the current version.
+4. **Refine by talking.** The builder is a chat. The teacher says what should change — or taps the part of the preview that is wrong first, then says it — and Slate regenerates, re-verifies the result, and only then replaces the current version. Any number of rounds.
 5. **Persist the record, not just the file.** The generation record — inputs plus every correction made — is the durable source of truth, so a session can be re-exported without version drift.
 
-Model choice is per job rather than one model for everything, and measured rather than assumed: a 10-generation benchmark scored first-pass verification success and set the generation default accordingly.
+Model choice is per job and per concept. A cheap model first judges how much has to be drawn — a two-resistor circuit is not a twelve-base transcription diagram — and routes generation to the cheapest model that can draw it legibly. Refinements are triaged the same way.
 
 ## Features
 
@@ -38,14 +38,16 @@ Model choice is per job rather than one model for everything, and measured rathe
 * **Dual-context rendering** — legibility and layout are handled by two independent, always-on CSS regimes, not a "projector mode" switch. The scene scales by viewBox and never reflows internally; the controls reflow freely around it.
 * **Prediction before reveal** — the student must commit to what they expect before the answer is reachable; the reveal is hidden in the DOM until then.
 * **Automated verification with a live checklist** — the teacher watches named checks tick through (structure, offline, contrast, 360×640, 1024×768, 1920×1080) rather than a spinner. Failures are named, never hidden.
-* **Correction by pointing** — tap the wrong element, say what is wrong in plain language, get a targeted regeneration that is re-verified before it ships. Unlimited corrections per session.
-* **Dynamic model routing** — a cheap model triages each correction as a surface tweak or a structural change, and a stronger model handles only what needs it.
+* **A chat, not a form** — a bottom composer like every AI product: the first message generates, every later one refines. Attach several photos, each a thumbnail with an ×. Point at the wrong element and it becomes a chip on your next message.
+* **Long work you can watch and stop** — an activity block with elapsed time, the checks list one click away, and a Stop that cancels the model call, not just the request.
+* **Sessions that persist** — reopen last week's material from "recent", or just reload; the conversation and the preview come back.
+* **Dynamic model routing** — a cheap model sizes each concept (simple / standard / dense) and each refinement (simple / complex); the stronger, costlier models handle only what needs them.
 * **Non-technical builder UI** — no source code is shown at any point. Progress is plain language and a checklist.
 
 ## Tech Stack
 
 * *Frontend:* Next.js 16 (App Router, React 19, TypeScript), Tailwind CSS v4 with a stone/chalk palette. No state-management library and no component kit.
-* *Backend:* Next.js route handlers on one long-running Node service — `/api/generate` (streaming NDJSON), `/api/persist-generation`, `/api/health`. No separate backend service.
+* *Backend:* Next.js route handlers on one long-running Node service — `/api/generate` (streaming NDJSON, abortable), `/api/persist-generation`, `/api/sessions` and `/api/sessions/[id]` (reopen), `/api/health`. No separate backend service.
 * *Database:* Supabase Postgres — a single `generations` table; inputs, corrections and the verification result live in `jsonb` columns.
 * *APIs / Services:* OpenAI API, called over plain `fetch` with no SDK dependency, routed per job by [`src/lib/models/router.ts`](src/lib/models/router.ts). Supabase Storage for uploaded photos.
 * *Hosting / Deployment:* Render free tier, a single web service defined by [`render.yaml`](render.yaml), with an external uptime pinger.
@@ -60,18 +62,18 @@ Model choice is per job rather than one model for everything, and measured rathe
 | Job | Model | Why |
 |---|---|---|
 | Reference artifact (one-time) | GPT-6 Astra | Every later generation inherits its structure — the highest-leverage call in the build. |
-| Artifact generation | GPT-5.6 Terra | Chosen by measurement, not assumption: 10/10 first-pass verification on the benchmark concept, against a 70% threshold. |
+| Artifact generation | Terra / Sol / Astra | Routed by Luna's judgement of how much the concept needs drawn. Terra's 10/10 benchmark was one sparse concept; a dense transcription diagram came back with colliding labels on it, so density now decides. |
 | Repair after a failed check | GPT-5.6 Sol | Astra's premium is not justified for HTML repair. |
-| Correction by pointing | Terra or Sol | Routed by Luna's triage of the teacher's comment. |
+| Refinement / correction | Terra or Sol | Routed by Luna's triage of the teacher's comment. |
 | Vision (textbook/board photo) | GPT-5.6 Sol | Notation errors propagate into everything downstream; never routed to the cheap model. |
-| Correction classification | GPT-5.6 Luna | One cheap call decides whether a correction is a surface tweak or a structural change. |
+| Classification | GPT-5.6 Luna | Two cheap calls: how much a concept needs drawn, and whether a refinement is a surface tweak or a structural change. |
 
 **AI-assisted implementation.** Per the `Co-Authored-By` trailers in the git history, the code was written with Claude Code as a coding agent — Claude Sonnet 5 for the original 6.5-hour hackathon build (steps 0–5) and Claude Opus 5 for the v2 work (correction by pointing, model routing, session memory). The repository carries an [`AGENTS.md`](AGENTS.md) with the standing constraints every agent session must follow, and [`context/`](context/) holds the running decision log, prompt documentation, verification notes and progress log those sessions worked from.
 
 **What AI actually accomplished here, concretely:**
 
 * *Code generation* — the full pipeline: prompt construction, streaming route handlers, the client-side verification layer, the repair loop and the correction flow.
-* *Debugging* — two silent, high-impact bugs found and fixed by agent sessions: a cross-realm `instanceof` check that made the verifier never actually exercise any control, and a verification rule that contradicted the spec and failed every honest artifact, including the hand-verified reference. Both are written up in [`context/VERIFICATION.md`](context/VERIFICATION.md) and [`context/DECISIONS.md`](context/DECISIONS.md).
+* *Debugging* — three silent, high-impact bugs found and fixed by agent sessions: a cross-realm `instanceof` check that made the verifier never actually exercise any control; a verification rule that contradicted the spec and failed every honest artifact, including the hand-verified reference; and that rule's own replacement, which parsed nothing and passed everything until a calibration run noticed. All written up in [`context/VERIFICATION.md`](context/VERIFICATION.md).
 * *Testing and measurement* — the 10-generation model benchmark, the classifier agreement check and the multi-turn token-cost measurement were scripted and run rather than estimated.
 * *Documentation* — this README and the `context/` logs.
 
@@ -133,14 +135,15 @@ Cut under the hackathon's own scope discipline — not attempted, not stubbed, n
 * **Alternatives** — 2–3 parallel approaches to the same concept.
 * **The cache layer** — `concept + band + language` lookup before generation. The single largest cost lever, per the spec.
 * **Bands A and C.**
-* **A library UI for past records** — records persist, but there is no browsing or reopening screen. Correction by pointing therefore works only within one live browser session; the spec's "reopen weeks later and correct it" case needs that screen.
+* **Auth and per-teacher scoping** — the spec specifies one hardcoded teacher identity and no auth provider, so every saved session is readable by anyone who can reach the deployment. The first thing to change if this ever serves more than one teacher.
 
 ### Known limitations
 
 * The language check is a character-range heuristic, not real language identification.
 * The hover-only check is a static scan of `<style>` blocks; it does not simulate hover.
-* Verification covers structure, safety and legibility. **It does not verify that the physics or maths is correct** — that is Tier 2, which is unbuilt. Artifacts should be reviewed by the teacher before use.
-* The Terra-vs-Sol benchmark is one concept in one language. It is a real measurement, but a narrow one.
+* Verification covers structure, safety and legibility, including label collisions and crowding. **It does not verify that the physics or maths is correct** — that is Tier 2, which is unbuilt. Artifacts should be reviewed by the teacher before use.
+* The visual-quality thresholds were calibrated on a dozen artifacts across two concepts. Real, but narrow; expect them to need adjusting as more concepts are generated.
+* Reopened sessions show each round's outcome and model, not its full checks list; stored photos are not rendered back into the transcript.
 * Free-tier hosting sleeps when idle.
 
 ### Verification honesty

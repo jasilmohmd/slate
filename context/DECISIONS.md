@@ -240,3 +240,36 @@
   ignored the response, so a Supabase outage produced a finished artifact
   with no record and no indication. It now tells the teacher to download the
   file before leaving the page.
+
+## v3 — chat sessions, complexity routing, visual-quality verification
+
+- **Verification thresholds are calibrated against a fixed artifact set, never
+  reasoned from intuition.** The scene-aspect incident was the warning; v3
+  added a second instance of the same lesson when a label-area-fraction rule
+  failed a known-good artifact sitting exactly at the threshold. It was
+  dropped rather than nudged. The set: the reference (must pass), ten stored
+  Terra runs, and the DNA artifact (must fail, naming the collision).
+- **The v2 scene-aspect check was inert until v3.** `/[\s,]+/` had become
+  `/[s,]+/` through a shell heredoc, so viewBox never split into four
+  numbers and every artifact took the "no measurable SVG scene" path. v2's
+  10/10 Terra result was measured with it vacuous. Re-scored working: still
+  11/11. Lesson recorded in VERIFICATION.md: when everything passes one
+  check for the same reason, suspect the check.
+- **Generation routes on how much has to be drawn, not on the physics.** The
+  Terra default came from ten runs of one sparse concept and was never
+  evidence about dense scenes. Luna sizes the scene by counting labelled
+  things; simple/standard/dense → Terra/Sol/Astra. Fails open to Sol: the
+  correction classifier can fail upward for free, but Astra is 2.5× Sol.
+- **Corrections and refinements are one shape.** `buildRefineTask` takes an
+  optional pointer; correction by pointing is the pointer case. This removed
+  the second input surface and made pointing a modifier on a chat turn.
+- **Stop must reach the model call.** `request.signal` is passed to the
+  upstream OpenAI fetch; aborting only the browser request leaves the
+  document generating and billing. An abort is not reported as an error.
+- **Sessions are unscoped.** §5a specifies one hardcoded teacher and no
+  auth, so `/api/sessions` lists everything. Stated in the code, restated
+  here: anyone who can reach the deployment can read every session.
+- **`?session=` in the URL is the session store.** No server-side session
+  state; a reload rehydrates from the record. Pre-v3 rows are synthesised
+  into a transcript on read (goal, result, corrections with results), not
+  migrated.

@@ -56,16 +56,17 @@ assembles whichever one applies into the final user turn.
   and the output-format instruction (raw HTML only, no fences).
 - **`buildRepairTask`** — the same, plus the named Tier 1 failures and the
   previous document. Fixes exactly what was flagged.
-- **`buildCorrectionTask`** — correction by pointing (§5 step 3). Carries the
-  element the teacher tapped (addressed by its `data-control`, falling back
-  to its `data-role`), the label they saw, the element's own markup, their
-  comment verbatim, and the current document. Its instruction is stronger
-  than a repair's: change only what the comment asks for, leave layout,
-  other controls, other text and the wording of anything uncomplained-about
-  exactly as it is, and prefer the smallest change when the comment is
-  ambiguous.
+- **`buildRefineTask`** — a chat turn asking for a change, with an
+  **optional** pointer. Correction by pointing (§5 step 3) is the pointer
+  case, not a separate task: when present it carries the element the
+  teacher tapped (addressed by its `data-control`, falling back to its
+  `data-role`), the label they saw and the element's own markup. Always
+  carries their words verbatim and the current document. Its instruction is
+  stronger than a repair's: change only what was asked for, leave layout,
+  other controls, other text and the wording of anything unmentioned exactly
+  as it is, and prefer the smallest change when the request is ambiguous.
 
-Corrections are full-document-in, full-document-out on purpose. There is no
+Refinements are full-document-in, full-document-out on purpose. There is no
 diff or patch infrastructure in this codebase, and partial patches from a
 model are unreliable.
 
@@ -75,18 +76,27 @@ call the API directly (`scripts/measure-terra.mjs`), not for the app.
 
 ## Photos
 
-A photo is sent as a second content part (`image_url` with a base64
-`data:image/jpeg` URI) attached to the **final turn only**, never to the
+Photos (up to 8 per turn) are sent as `image_url` content parts with base64
+`data:image/jpeg` URIs, attached to the **final turn only**, never to the
 preamble. One call does both vision extraction and generation rather than
 two separate calls, and that call routes as `vision` (§5b: never Luna),
 which matters now that the generation default is not Sol.
 
 ## Models
 
-Routed per job by `src/lib/models/router.ts` — see `DECISIONS.md`. Generation
-reads `SLATE_GENERATION_MODEL`, currently `gpt-5.6-terra` by measurement;
-repair and vision are Sol; a correction is Terra or Sol depending on Luna's
-triage in `src/lib/models/classify.ts`.
+Routed per job by `src/lib/models/router.ts` — see `DECISIONS.md`.
+
+- **Generation** is triaged first by `classifyConcept` (Luna): how many
+  separate labelled things the diagram must show. simple →
+  `SLATE_GENERATION_MODEL` (Terra), standard → Sol, dense → Astra. Fails
+  open to Sol. The prompt is framed as counting, with worked examples; it
+  scores 6/7 against manual judgement, the miss erring upward.
+- **Repair** and **vision** are Sol.
+- **Refinement** is Terra or Sol by `classifyCorrection` (Luna).
+
+The v3 contract also tells the model the rules the new Tier 1 checks
+enforce — labels must not collide at any viewport, and when it does not
+fit, draw less (fewer elements, never smaller text).
 
 The classification call sets `reasoning_effort: "none"` and leaves token
 headroom. Luna is a reasoning model: with a tight `max_completion_tokens`
@@ -102,16 +112,19 @@ that as "complex" every single time.
   UI no longer renders these (v2 step 1 removed the source panel); the
   stream is still drained, which also keeps the connection alive through
   proxies during a long generation.
-- `{"type":"done","id":..,"html":..,"photoPath":..,"model":..,"complexity":..}`
+- `{"type":"done","id":..,"html":..,"photoPaths":[..],"model":..,"complexity":..,"conceptComplexity":..}`
   — sent once, after the OpenAI stream ends. The client uses this `html`,
   not its own concatenation of deltas, as the authoritative artifact (avoids
   any multi-byte UTF-8 chunk-boundary risk from manual client-side
-  accumulation). `model` and `complexity` are recorded against the
-  correction in `record.corrections[]`.
+  accumulation). `model`, `complexity` and `conceptComplexity` are
+  recorded on the turn in `record.turns[]`.
 - `{"type":"error","message":"..."}` — on any failure. The HTTP response is
   always 200 with this streaming body; errors are communicated in-band, not
   via HTTP status, because the response has already started streaming by the
-  time most failures can occur.
+  time most failures can occur. An abort (the teacher pressing Stop) is
+  not reported as an error: the client's `AbortSignal` is passed through to
+  the upstream OpenAI fetch, so the model call is cancelled rather than left
+  running.
 
 Persistence is a separate call (`/api/persist-generation`), made by the
 client once the generate/verify/repair cycle settles.

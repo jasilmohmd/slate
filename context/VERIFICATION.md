@@ -50,6 +50,23 @@ repair loop.
      - `projection-stroke` — every SVG shape's computed `stroke-width`
        ≥3px, or trivially passes if the artifact has no SVG strokes at all
        (only checked at ≥900px viewports).
+     - `label-collision` — visible **leaf** text elements inside the
+       scene (elements carrying text with no text-bearing child) must not
+       overlap each other by more than 10% of the smaller box, unless one
+       contains the other (all three viewports). Comparing leaves is what
+       makes this tractable: every wrapper trivially overlaps its own
+       contents. Added in v3 after a DNA-to-mRNA artifact passed everything
+       else with its strand labels on top of the base pairs.
+     - `scene-density` — at 360×640 only: at most 20 scene labels, none
+       rendered below 11px. A label-area-fraction rule was tried and dropped
+       (see the v3 incident below).
+
+   Thresholds for the two v3 checks are **calibrated against a fixed
+   artifact set** (reference + ten stored Terra runs must pass; the DNA
+   artifact must fail naming the collision), never set from intuition.
+   `runTier1` takes `{ verbose: true }` so the dev-only `/measure` page
+   can see passing measurements while calibrating; the teacher UI leaves it
+   off.
 
 ## Exercising controls
 
@@ -146,3 +163,26 @@ depends on the corrected check.
 Lesson: when a verification layer fails everything for one reason, suspect
 the verifier before the thing being verified, and keep a known-good
 control artifact to score against.
+
+
+## Incident: a threshold that failed a known-good artifact (v3)
+
+While adding `scene-density`, a rule capping label area at 45% of the
+scene was written from first principles. It failed a stored artifact sitting
+at exactly 45% and only marginally flagged the bad one, which the overlap and
+count rules already caught twice over. Dropped rather than nudged. The
+scene-aspect lesson generalises: a check that fails a known-good artifact is
+wrong, whatever the reasoning behind it.
+
+## Incident: the scene-aspect check was inert (found in v3)
+
+The v2 rewrite of `checkSceneAspect` parsed `viewBox` with `/[s,]+/`
+instead of `/[\s,]+/` — a backslash lost through a shell heredoc. The
+split never yielded four numbers, every SVG was skipped, and every artifact
+took the "no measurable SVG scene" path. It had been vacuously passing since
+it was written; v2's 10/10 Terra figure and its reference regression case
+were both measured with it inert. Fixed; re-scored working, still 11/11.
+
+Lesson: when a check reports the same passing detail for every artifact,
+suspect the check. And never write regexes through a shell layer you have
+seen eat backslashes.

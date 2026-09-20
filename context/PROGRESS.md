@@ -24,3 +24,21 @@ rather than timeboxed. Ordered by leverage and risk, one commit each.
 
 - The correction UI's click-through was **not** verified in a live browser end to end. The browser pane stopped compositing mid-session, so `requestAnimationFrame` never fired and Tier 1's measurement loop stalled. The shim was instead verified exhaustively in an identical iframe, and the correction round-trip against the live API; earlier in the same session a real click into the sandboxed preview did reach the parent and render the hint. The React wiring between those two proven ends is exercised only by build and typecheck.
 - Correction by pointing works only within one live browser session, since `generationId` lives in React state. §2c's own example — reopening a record weeks later to correct it — still needs a "load past record" screen, which is out of scope here.
+
+## v3 — chat sessions, complexity routing, visual-quality verification
+
+Prompted by a class 9 DNA-to-mRNA artifact that Tier 1 passed with its strand
+labels sitting on top of the base pairs.
+
+- v3 step 1: Done. Two Tier 1 checks, `label-collision` and `scene-density`, calibrated against a fixed set rather than reasoned from first principles: reference + 10 stored Terra runs score 11/11, the DNA artifact fails at all three viewports naming the collision. A label-area rule was written and dropped because it failed a known-good artifact. **Found and fixed on the way: v2's scene-aspect fix had been vacuously passing** — a backslash lost through a shell heredoc turned `/[\s,]+/` into `/[s,]+/`, so viewBox never parsed. Re-scored with it working: still 11/11. Matching contract rules added to the prompt ("labels must not collide", "when it does not fit, draw less").
+- v3 step 2: Done. `classifyConcept` (Luna) judges how much has to be drawn; `chooseModel` routes simple → Terra, standard → Sol, dense → Astra. Fails open to Sol, not Astra. First prompt scored 2/7 and put the DNA case on Sol; counting-labelled-things framing with worked examples scores 6/7, the miss erring upward. Reasoning on made it worse at 8x the tokens.
+- v3 step 3: Done. `record.turns[]` transcript, `photoPaths[]`, `conceptComplexity`; `GET /api/sessions` and `GET /api/sessions/[id]`, unscoped by design (§5a: one teacher, no auth — stated plainly in code). Pre-v3 rows synthesise a transcript on read; no migration.
+- v3 steps 4–6: Done. Form replaced by a chat: bottom composer, attachment chips with thumbnails and ×, pointer chip for correction by pointing, activity block with elapsed time and Stop. Stop threads `AbortController` through to the OpenAI fetch — verified by timing (handler ended at 14.6s when pressed). Acceptance test: DNA concept → Astra → four bases, clean labels, all checks first time; pointed rename → Terra → only the button changed → saved with four turns. Two bugs fixed on the way: a stale-closure goal made the first save 400, and a refinement overwrote the concept verdict with null.
+- v3 step 7: Done. `?session=` in the URL survives reload; "recent" and "new" in the header. Pre-v3 rows also synthesise result turns.
+
+### Known gaps at the end of v3
+
+- A real tap inside the sandboxed preview is still not verified from this browser pane (synthetic clicks do not reach the frame). The shim was proven in v2; the parent side was exercised with a message from the real preview window, and a spoofed source was rejected.
+- Reopened activity blocks show pass/fail and model but no per-check list; only the outcome is stored per turn.
+- Stored attachments are in a private bucket and are not rendered back into a reopened transcript.
+- Sessions are readable by anyone who can reach the deployment. That is §5a's single-identity trade, and the first thing to change if this serves more than one teacher.

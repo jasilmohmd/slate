@@ -9,7 +9,7 @@ import {
 } from "@/lib/artifact/generationPrompt";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { chooseModel } from "@/lib/models/router";
-import { classifyCorrection } from "@/lib/models/classify";
+import { classifyConcept, classifyCorrection } from "@/lib/models/classify";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -142,10 +142,18 @@ export async function POST(request: Request) {
     ? await classifyCorrection(correction!.comment, correction!.elementSnippet)
     : null;
 
+  // Only a first generation is triaged. A repair already has its own
+  // escalation, and a correction is triaged by its own comment above.
+  const conceptComplexity =
+    !isCorrection && !isRepair ? await classifyConcept(goal, classNumber) : null;
+
   const job = isCorrection ? "correction" : isRepair ? "repair" : "generate";
   const model = photoBuffer
     ? chooseModel("vision")
-    : chooseModel(job, { correctionComplexity: complexity ?? undefined });
+    : chooseModel(job, {
+        correctionComplexity: complexity ?? undefined,
+        conceptComplexity: conceptComplexity ?? undefined,
+      });
 
   const messages = buildMessages({
     ...shared,
@@ -222,7 +230,7 @@ export async function POST(request: Request) {
         }
 
         controller.enqueue(
-          encodeLine({ type: "done", id: generationId, html: finalHtml, photoPath, model, complexity })
+          encodeLine({ type: "done", id: generationId, html: finalHtml, photoPath, model, complexity, conceptComplexity })
         );
       } catch (err) {
         controller.enqueue(

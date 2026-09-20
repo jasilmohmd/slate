@@ -29,6 +29,8 @@ export interface RoutingContext {
   attemptNumber?: number;
   /** Luna's triage verdict for a correction (see models/classify.ts). */
   correctionComplexity?: "simple" | "complex";
+  /** Luna's judgement of how much the concept needs drawn. */
+  conceptComplexity?: "simple" | "standard" | "dense";
 }
 
 const SOL = "gpt-5.6-sol";
@@ -45,7 +47,13 @@ export const DEFAULT_GENERATION_MODEL =
 
 export function chooseModel(job: Job, ctx: RoutingContext = {}): string {
   switch (job) {
+    // How much has to be drawn is what predicts whether a cheaper model
+    // produces a legible scene. A sparse circuit is fine on Terra; a base-pair
+    // sequence with a label per position is not, and came back with labels
+    // stacked on top of each other.
     case "generate":
+      if (ctx.conceptComplexity === "dense") return ASTRA;
+      if (ctx.conceptComplexity === "standard") return SOL;
       return DEFAULT_GENERATION_MODEL;
 
     // Astra's 2.5x premium over Sol is not justified for HTML generation,

@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { runTier1, type CheckResult } from "@/lib/verification/tier1";
 import { injectSelectionShim } from "@/lib/artifact/selectionShim";
@@ -633,6 +634,7 @@ export default function Home() {
   return (
     <div className="flex h-dvh flex-col">
       <header className="flex items-center gap-3 border-b border-[var(--frame)] px-4 py-3">
+        <Image src="/logo.png" alt="" width={40} height={32} priority className="h-8 w-auto" />
         <h1 className="text-2xl font-bold text-[var(--chalk)]">Slate</h1>
         {goal && <span className="truncate text-sm text-[var(--chalk-dim)]">{goal}</span>}
         <RecentSessions

@@ -634,10 +634,19 @@ export default function Home() {
   return (
     <div className="flex h-dvh flex-col">
       <header className="flex items-center gap-3 border-b border-[var(--frame)] px-4 py-3">
-        {/* Sized to the wordmark's cap height and centred on it, so the mark
-            reads as part of the name rather than a badge beside it. */}
+        {/* Sized to the wordmark's cap height (17px at 24px Manjari) and
+            centred on the ink, not the line box: Manjari sets its glyphs
+            high in the box, so geometric centring leaves the mark hanging
+            ~5px below the letters. */}
         <div className="flex items-center gap-2">
-          <Image src="/logo.png" alt="" width={28} height={22} priority className="h-[22px] w-auto" />
+          <Image
+            src="/logo.png"
+            alt=""
+            width={22}
+            height={17}
+            priority
+            className="h-[17px] w-auto -translate-y-[5px]"
+          />
           <h1 className="text-2xl font-bold leading-none text-[var(--chalk)]">Slate</h1>
         </div>
         {goal && <span className="truncate text-sm text-[var(--chalk-dim)]">{goal}</span>}

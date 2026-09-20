@@ -28,9 +28,17 @@ the live deploy fails during the demo:
    `.html` files locally and keep going — that's the entire reason they're
    pre-exported. Say so explicitly if it happens; it demonstrates the
    offline guarantee rather than undermining the demo.
-5. **Name the cut list out loud** if asked "what about Band C / correction
-   by pointing / etc." — it's honest scope discipline, not a gap you're
-   hiding. See the README's "What's built vs. unbuilt" section.
+5. **Name the cut list out loud** if asked "what about Band C / Tier 2
+   numerical checks / the cache layer / etc." — it's honest scope
+   discipline, not a gap you're hiding. See the README's "Specified but
+   deliberately not built" section.
+
+   Note: **correction by pointing is now built** (v2) and is no longer on
+   the cut list. If you demo it, tap an element in the preview, say what's
+   wrong in plain words, and let the checks re-run — the point is that a
+   correction is re-verified before it replaces the current version, not
+   just accepted. It only works within one live browser session; there's
+   still no screen for reopening a past record.
 
 ## Before you go on stage
 

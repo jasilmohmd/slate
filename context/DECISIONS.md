@@ -73,6 +73,8 @@
   step 4. Defaulting to Sol now matches §5b's own fallback branch ("<70% →
   Sol default throughout") and avoids blocking step 3 on a step-4
   dependency. Revisit once Tier 1 exists.
+  **Superseded in v2**: the measurement was run and the default is now
+  Terra — see the v2 section at the end of this file.
 - One Sol call handles both vision extraction and generation when a photo
   is attached (multimodal message: text contract + image_url), rather than
   two separate calls — §5b assigns both jobs to Sol anyway, so splitting

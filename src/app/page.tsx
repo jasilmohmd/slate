@@ -5,6 +5,8 @@ import { runTier1, type CheckResult } from "@/lib/verification/tier1";
 import { injectSelectionShim } from "@/lib/artifact/selectionShim";
 import { ActivityBlock, isRunning, type Activity, type ActivityStatus } from "./_components/ActivityBlock";
 import { Composer, type Attachment, type Pointer } from "./_components/Composer";
+import { RecentSessions } from "./_components/RecentSessions";
+import type { Turn } from "@/lib/session";
 
 type PreviewMode = "phone" | "projector";
 
@@ -148,6 +150,108 @@ export default function Home() {
 
   const busy = transcript.some((item) => item.kind === "activity" && isRunning(item.activity.status));
   const started = transcript.length > 0;
+
+  // ---- reopening a session -----------------------------------------------
+
+  const [loadingSession, setLoadingSession] = useState(false);
+
+  function resetSession() {
+    abortRef.current?.abort();
+    for (const a of attachmentsRef.current) URL.revokeObjectURL(a.url);
+    setTranscript([]);
+    setFinalHtml(null);
+    setGenerationId(null);
+    setPhotoPaths([]);
+    setConceptComplexity(null);
+    setGoal("");
+    setText("");
+    setAttachments([]);
+    setPointer(null);
+    setSelectMode(false);
+    setSaveWarning(null);
+    window.history.replaceState(null, "", window.location.pathname);
+  }
+
+  // A stored transcript comes back as turns; rebuild the same items the live
+  // session would have produced. Results carry no per-check detail (only the
+  // outcome was persisted per turn), so their checks list is empty.
+  function itemsFromTurns(turns: Turn[]): TranscriptItem[] {
+    return turns.map((turn): TranscriptItem => {
+      const at = turn.at;
+      if (turn.role === "teacher") {
+        return {
+          kind: "teacher",
+          id: turn.id,
+          at,
+          text: turn.text,
+          pointer: turn.pointer ?? null,
+          // Stored attachments live in a private bucket; the transcript notes
+          // them rather than trying to render them.
+          attachments: [],
+          turnKind: turn.kind === "goal" || turn.kind === "correction" ? turn.kind : "refine",
+        };
+      }
+      const passed = turn.verification?.passed ?? true;
+      const when = Date.parse(at) || Date.now();
+      return {
+        kind: "activity",
+        id: turn.id,
+        at,
+        activity: {
+          id: turn.id,
+          status: passed ? "done" : "failed",
+          startedAt: when,
+          endedAt: when,
+          checks: [],
+          attempt: Math.max(0, (turn.verification?.attempts ?? 1) - 1),
+          model: turn.model ?? "",
+          conceptComplexity: turn.complexity ?? null,
+          error: null,
+        },
+      };
+    });
+  }
+
+  const openSession = useCallback(async (id: string) => {
+    setLoadingSession(true);
+    try {
+      const res = await fetch(`/api/sessions/${id}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `Could not open session (${res.status})`);
+      }
+      const session = await res.json();
+      abortRef.current?.abort();
+      setTranscript(itemsFromTurns(session.turns ?? []));
+      setFinalHtml(session.artifactHtml ?? null);
+      setGenerationId(session.id);
+      setPhotoPaths(session.photoPaths ?? []);
+      setConceptComplexity(session.conceptComplexity ?? null);
+      setGoal(session.goal ?? "");
+      setClassNumber(session.classNumber ?? 9);
+      setLanguage(session.language === "en" ? "en" : "ml");
+      setText("");
+      setAttachments([]);
+      setPointer(null);
+      setSelectMode(false);
+      setSaveWarning(null);
+      window.history.replaceState(null, "", `?session=${session.id}`);
+    } catch (err) {
+      setSaveWarning(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingSession(false);
+    }
+  }, []);
+
+  // Survive a reload: the session id lives in the URL once it exists.
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("session");
+    if (!id) return;
+    // Deferred so the load starts after this render commits rather than
+    // setting state from inside the effect body.
+    const timer = setTimeout(() => void openSession(id), 0);
+    return () => clearTimeout(timer);
+  }, [openSession]);
 
   // ---- attachments -------------------------------------------------------
 
@@ -458,6 +562,7 @@ export default function Home() {
       setPhotoPaths(paths);
       const sessionComplexity = round.conceptComplexity ?? conceptComplexity;
       setConceptComplexity(sessionComplexity);
+      window.history.replaceState(null, "", `?session=${round.id}`);
       setFinalHtml(round.html);
 
       const finalStatus: ActivityStatus = round.passed ? "done" : "failed";
@@ -530,13 +635,21 @@ export default function Home() {
       <header className="flex items-center gap-3 border-b border-[var(--frame)] px-4 py-3">
         <h1 className="text-2xl font-bold text-[var(--chalk)]">Slate</h1>
         {goal && <span className="truncate text-sm text-[var(--chalk-dim)]">{goal}</span>}
+        <RecentSessions
+          currentId={generationId}
+          onOpen={(id) => void openSession(id)}
+          onNew={resetSession}
+          disabled={busy || loadingSession}
+        />
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col md:flex-row">
         {/* Transcript */}
         <div ref={transcriptRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
-            {transcript.length === 0 && (
+            {loadingSession && <p className="slate-pulse text-[var(--chalk-dim)]">Opening session…</p>}
+
+            {transcript.length === 0 && !loadingSession && (
               <div className="mt-12 text-center text-[var(--chalk-dim)]">
                 <p className="text-xl text-[var(--chalk)]">What are you teaching?</p>
                 <p className="mt-2 text-sm">

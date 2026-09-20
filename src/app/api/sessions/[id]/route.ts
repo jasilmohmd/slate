@@ -43,9 +43,14 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     classNumber: record.classNumber ?? 9,
     language: record.language ?? data.language ?? "ml",
     conceptComplexity: record.conceptComplexity ?? null,
+    photoPaths: record.photoPaths ?? (record.photoPath ? [record.photoPath] : []),
     // Pre-v3 rows carry only corrections[]; synthesise a transcript rather
     // than migrating them.
-    turns: turnsFromRecord(record, data.created_at as string),
+    turns: turnsFromRecord(
+      record,
+      data.created_at as string,
+      data.verification as { passed?: boolean; attempts?: number } | null
+    ),
     artifactHtml: data.artifact_html ?? null,
     verification: data.verification ?? null,
   });

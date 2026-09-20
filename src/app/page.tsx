@@ -634,8 +634,12 @@ export default function Home() {
   return (
     <div className="flex h-dvh flex-col">
       <header className="flex items-center gap-3 border-b border-[var(--frame)] px-4 py-3">
-        <Image src="/logo.png" alt="" width={40} height={32} priority className="h-8 w-auto" />
-        <h1 className="text-2xl font-bold text-[var(--chalk)]">Slate</h1>
+        {/* Sized to the wordmark's cap height and centred on it, so the mark
+            reads as part of the name rather than a badge beside it. */}
+        <div className="flex items-center gap-2">
+          <Image src="/logo.png" alt="" width={28} height={22} priority className="h-[22px] w-auto" />
+          <h1 className="text-2xl font-bold leading-none text-[var(--chalk)]">Slate</h1>
+        </div>
         {goal && <span className="truncate text-sm text-[var(--chalk-dim)]">{goal}</span>}
         <RecentSessions
           currentId={generationId}

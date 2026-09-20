@@ -15,7 +15,9 @@ import { runTier1, type CheckResult } from "@/lib/verification/tier1";
 type Row = {
   name: string;
   passed: boolean;
-  failed: CheckResult[];
+  /** Every check carrying detail, not only failures — calibration needs the
+   *  measurements from artifacts that pass, too. */
+  notable: CheckResult[];
 };
 
 export default function Measure() {
@@ -38,10 +40,10 @@ export default function Measure() {
         const res = await fetch(`${baseUrl.replace(/[/]$/, "")}/${name}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const html = await res.text();
-        const result = await runTier1(html, language);
+        const result = await runTier1(html, language, undefined, { verbose: true });
         setRows((prev) => [
           ...prev,
-          { name, passed: result.passed, failed: result.checks.filter((c) => !c.passed) },
+          { name, passed: result.passed, notable: result.checks.filter((c) => c.detail) },
         ]);
       } catch (err) {
         setRows((prev) => [
@@ -49,7 +51,7 @@ export default function Measure() {
           {
             name,
             passed: false,
-            failed: [
+            notable: [
               {
                 id: "load",
                 label: "could not load",
@@ -73,10 +75,10 @@ export default function Measure() {
     const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name));
     for (const file of sorted) {
       const html = await file.text();
-      const result = await runTier1(html, language);
+      const result = await runTier1(html, language, undefined, { verbose: true });
       setRows((prev) => [
         ...prev,
-        { name: file.name, passed: result.passed, failed: result.checks.filter((c) => !c.passed) },
+        { name: file.name, passed: result.passed, notable: result.checks.filter((c) => c.detail) },
       ]);
     }
 
@@ -152,10 +154,10 @@ export default function Measure() {
             <span className={row.passed ? "text-[var(--chalk-green)]" : "text-[var(--chalk-rose)]"}>
               {row.passed ? "✓" : "✗"} {row.name}
             </span>
-            {row.failed.length > 0 && (
+            {row.notable.length > 0 && (
               <ul className="ml-6 text-[var(--chalk-dim)]">
-                {row.failed.map((c, i) => (
-                  <li key={`${c.id}-${i}`}>
+                {row.notable.map((c, i) => (
+                  <li key={`${c.id}-${i}`} className={c.passed ? "" : "text-[var(--chalk-rose)]"}>
                     {c.label} — {c.detail ?? "failed"}
                   </li>
                 ))}

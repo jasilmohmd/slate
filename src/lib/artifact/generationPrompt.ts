@@ -72,6 +72,19 @@ DUAL VIEWING CONTEXT (§2a):
 - Give every line/stroke in the SVG the attribute
   vector-effect="non-scaling-stroke" so it stays >=3px regardless of
   viewBox scale.
+- LABELS MUST NOT COLLIDE. No overlay label may overlap another label, or
+  overlap the element it annotates, at ANY of 360x640, 1024x768 or
+  1920x1080. This is checked automatically and is the most common way a
+  generated artifact is rejected. Strand names, axis names and row labels
+  are the usual offenders: give them their own gutter outside the drawn
+  content rather than floating them across it. If a label has nowhere to
+  sit without colliding, the scene has too much in it — see the next rule.
+- WHEN IT DOES NOT FIT, DRAW LESS. Never solve crowding by shrinking text,
+  tightening spacing or stacking labels on top of each other. Reduce what
+  is drawn: fewer base pairs, fewer sample points, fewer annotated
+  positions. A diagram showing 6 items clearly teaches the concept; one
+  showing 12 items illegibly teaches nothing. Keep the scene under about 20
+  separate text labels at phone width.
 - Do not lock screen orientation; layout must respond live to resize.
 
 TWO AUDIENCES, ONE FILE (§2b):

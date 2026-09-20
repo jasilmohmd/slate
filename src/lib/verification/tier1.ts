@@ -187,6 +187,162 @@ function checkContrast(win: Window, doc: Document): CheckResult {
   };
 }
 
+// Thresholds for the two visual-quality checks below. Calibrated against a
+// fixed artifact set rather than reasoned from first principles — the
+// scene-aspect incident (context/VERIFICATION.md) is what happens when a
+// check is written from an intuition and never scored against a known-good
+// artifact. The reference artifact must pass these.
+const OVERLAP_AREA_FRACTION = 0.1;
+const MAX_SCENE_LABELS = 20;
+const MIN_PHONE_LABEL_PX = 11;
+
+// Measured over the calibration set at 360x640 (reference artifact plus ten
+// generated ones, against the known-bad DNA/mRNA artifact):
+//
+//   overlapping pairs   good 0          bad 2
+//   scene labels        good 6-8        bad 29
+//   label area / scene  good 33-45%     bad 47%
+//
+// Overlap and label count separate cleanly. Label-area fraction does not —
+// the bands touch, and a 45% rule failed a known-good artifact sitting at
+// exactly 45%. It was dropped rather than nudged: a threshold that fails
+// good artifacts is the scene-aspect mistake again, and the crowding it was
+// meant to catch is already caught twice over by the other two rules.
+
+type Box = { el: Element; rect: DOMRect; text: string };
+
+/**
+ * Visible leaf text elements inside the scene: elements that carry text and
+ * contain no child element that itself carries text. Comparing leaves is
+ * what makes collision detection tractable — every wrapper trivially
+ * "overlaps" its own contents, so comparing all text-bearing elements
+ * reports nothing but noise.
+ */
+function sceneTextBoxes(scene: Element): Box[] {
+  const boxes: Box[] = [];
+  const candidates = scene.querySelectorAll("*");
+
+  for (const el of candidates) {
+    const text = (el.textContent ?? "").trim();
+    if (!text) continue;
+
+    let hasTextChild = false;
+    for (const child of el.children) {
+      if ((child.textContent ?? "").trim()) {
+        hasTextChild = true;
+        break;
+      }
+    }
+    if (hasTextChild) continue;
+
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+
+    boxes.push({ el, rect, text });
+  }
+
+  return boxes;
+}
+
+function overlapArea(a: DOMRect, b: DOMRect): number {
+  const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+  const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  return w > 0 && h > 0 ? w * h : 0;
+}
+
+/**
+ * §2a's overlay rule exists so in-scene labels stay legible at any scale.
+ * An artifact can satisfy every other check — structure, contrast, overflow,
+ * projection text — while its labels sit on top of each other and the
+ * diagram is unreadable. That is the failure this catches.
+ */
+function checkLabelCollision(doc: Document): CheckResult {
+  const scene = doc.querySelector('[data-role="scene"]');
+  if (!scene) {
+    return { id: "label-collision", label: "labels do not overlap", passed: false, detail: "scene not found" };
+  }
+
+  const boxes = sceneTextBoxes(scene);
+  const collisions: string[] = [];
+
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      // Nesting is legitimate layout, not a collision.
+      if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+
+      const area = overlapArea(a.rect, b.rect);
+      if (area <= 0) continue;
+
+      const smaller = Math.min(a.rect.width * a.rect.height, b.rect.width * b.rect.height);
+      if (smaller <= 0) continue;
+
+      if (area / smaller > OVERLAP_AREA_FRACTION) {
+        const pct = Math.round((area / smaller) * 100);
+        collisions.push('"' + a.text.slice(0, 24) + '" over "' + b.text.slice(0, 24) + '" (' + pct + "%)");
+      }
+    }
+  }
+
+  return {
+    id: "label-collision",
+    label: "labels do not overlap",
+    passed: collisions.length === 0,
+    detail: collisions.length
+      ? collisions.length + " overlapping pair(s): " + collisions.slice(0, 3).join("; ")
+      : boxes.length + " scene labels, none overlapping",
+  };
+}
+
+/**
+ * Crowding is the other half of the same problem, and the one the model
+ * reaches for when told to fit more in: shrink everything until it
+ * technically fits. §2a's answer is to reduce what is drawn, not to scale it
+ * down, so this measures the phone viewport only — where crowding bites.
+ */
+function checkSceneDensity(win: Window, doc: Document): CheckResult {
+  const scene = doc.querySelector('[data-role="scene"]');
+  if (!scene) {
+    return { id: "scene-density", label: "scene not overcrowded", passed: false, detail: "scene not found" };
+  }
+
+  const sceneRect = scene.getBoundingClientRect();
+  const sceneArea = sceneRect.width * sceneRect.height;
+  const boxes = sceneTextBoxes(scene);
+
+  let labelArea = 0;
+  let smallest = Infinity;
+  for (const box of boxes) {
+    labelArea += box.rect.width * box.rect.height;
+    const size = parseFloat(win.getComputedStyle(box.el).fontSize);
+    if (Number.isFinite(size) && size < smallest) smallest = size;
+  }
+
+  // Reported for diagnostics, deliberately not asserted on — see the note
+  // on the thresholds above.
+  const areaFraction = sceneArea > 0 ? labelArea / sceneArea : 0;
+  const problems: string[] = [];
+
+  if (boxes.length > MAX_SCENE_LABELS) {
+    problems.push(boxes.length + " labels in the scene (max " + MAX_SCENE_LABELS + ") — draw fewer elements, do not shrink them");
+  }
+  if (Number.isFinite(smallest) && smallest < MIN_PHONE_LABEL_PX) {
+    problems.push("smallest label " + smallest.toFixed(0) + "px (min " + MIN_PHONE_LABEL_PX + "px)");
+  }
+
+  const summary =
+    boxes.length + " labels, smallest " + (Number.isFinite(smallest) ? smallest.toFixed(0) + "px" : "n/a") +
+    ", " + Math.round(areaFraction * 100) + "% of scene";
+
+  return {
+    id: "scene-density",
+    label: "scene not overcrowded",
+    passed: problems.length === 0,
+    detail: problems.length ? problems.join("; ") : summary,
+  };
+}
+
 function checkOverflow(doc: Document): CheckResult {
   const html = doc.documentElement;
   const overflowing = html.scrollWidth > html.clientWidth + 1;
@@ -218,7 +374,7 @@ function checkSceneAspect(doc: Document): CheckResult {
   for (const svg of svgs) {
     const viewBox = svg.getAttribute("viewBox");
     if (!viewBox) continue;
-    const parts = viewBox.trim().split(/[s,]+/).map(Number);
+    const parts = viewBox.trim().split(/[\s,]+/).map(Number);
     if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) continue;
     const [, , vbWidth, vbHeight] = parts;
     if (vbWidth <= 0 || vbHeight <= 0) continue;
@@ -319,10 +475,21 @@ async function nextFrame() {
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
 
+export type Tier1Options = {
+  /**
+   * Include per-viewport sub-check detail even when a sub-check passes.
+   * Used by the dev-only scoring page to calibrate thresholds against a
+   * fixed artifact set; the teacher-facing UI leaves it off, since the
+   * passing measurements are noise to them.
+   */
+  verbose?: boolean;
+};
+
 export async function runTier1(
   html: string,
   language: "ml" | "en",
-  onProgress?: (check: CheckResult) => void
+  onProgress?: (check: CheckResult) => void,
+  options?: Tier1Options
 ): Promise<Tier1Result> {
   const emit = (check: CheckResult) => {
     onProgress?.(check);
@@ -383,20 +550,23 @@ export async function runTier1(
       iframe.style.height = `${vp.height}px`;
       await nextFrame();
 
-      const vpChecks = [checkOverflow(doc), checkSceneAspect(doc)];
+      const vpChecks = [checkOverflow(doc), checkSceneAspect(doc), checkLabelCollision(doc)];
       if (vp.width >= 900) {
         vpChecks.push(checkContrast(win, doc), checkProjectionText(win, doc), checkProjectionStroke(win, doc));
       } else {
-        vpChecks.push(checkContrast(win, doc));
+        // Crowding is measured on the phone viewport only, which is where it
+        // actually makes an artifact unusable.
+        vpChecks.push(checkContrast(win, doc), checkSceneDensity(win, doc));
       }
 
       const failed = vpChecks.filter((c) => !c.passed);
+      const reported = options?.verbose ? vpChecks.filter((c) => c.detail) : failed;
       checks.push(
         emit({
           id: `viewport-${vp.id}`,
           label: vp.label,
           passed: failed.length === 0,
-          detail: failed.length ? failed.map((c) => `${c.label}: ${c.detail}`).join("; ") : undefined,
+          detail: reported.length ? reported.map((c) => `${c.label}: ${c.detail}`).join("; ") : undefined,
         })
       );
     }

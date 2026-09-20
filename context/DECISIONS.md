@@ -160,3 +160,38 @@
 - `demo/REHEARSAL.md` written for the human presenter — a rehearsal
   checklist, not something this agent can do on the user's behalf.
 
+
+## v2 — correction by pointing, dynamic routing, session memory
+
+- **Model routing moved from a module constant to `chooseModel(job, ctx)`**
+  (`src/lib/models/router.ts`), implementing §5b's per-job table. Vision
+  deliberately takes no context override, so §5b's "never Luna for vision"
+  is structural rather than conventional. Because a photo still rides on
+  the generation call itself, that call routes as `vision`.
+- **`checkSceneAspect` was wrong and is fixed.** It asserted
+  `container aspect >= data-min-aspect`, but §2a says a container falling
+  below the declared minimum is what *triggers* reframing ("reframe, never
+  squash") — the normal state of any phone in portrait. The check failed
+  every artifact that declared an honest minimum, including the checked-in
+  reference artifact (0.69 vs declared 1.2), while the only artifact in the
+  database that ever passed declares `data-min-aspect="0.65"`. It now tests
+  the rule the spec actually states: the rendered SVG must keep its own
+  viewBox ratio. `data-min-aspect` remains part of the §2d contract and
+  drives each artifact's own reframe logic; Tier 1 no longer asserts on it.
+- **The §5b Terra-vs-Sol measurement was run** (it could not be run during
+  the hackathon — Tier 1 did not exist yet at step 3). Ten class 9
+  parallel-circuits generations on `gpt-5.6-terra`, scored through the real,
+  unmodified `runTier1`: **10/10 first-pass**, well clear of §5b's 70%
+  threshold, so the generation default is now Terra via
+  `SLATE_GENERATION_MODEL`. Caveats worth stating plainly: this is one
+  concept in one language, and it was scored against the corrected
+  scene-aspect check — the same batch scored 0/10 against the old one. Sol
+  still handles repair, correction escalation and vision.
+- **Measurement is split in two** because Tier 1 is client-side by mandate
+  (AGENTS.md) and §5a forbids adding a headless browser:
+  `scripts/measure-terra.mjs` generates candidates to disk (resumable, so a
+  half-finished batch is not paid for twice), and the dev-only `/measure`
+  page scores them with the real `runTier1` rather than a reimplementation
+  that could drift from what the builder enforces.
+- Prompt-prefix caching is confirmed working, not assumed: the measurement
+  logged `cached=9005` of 9008 input tokens on every run after the first.

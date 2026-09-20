@@ -38,7 +38,7 @@ One config object, keyed by the class number the teacher enters, drives generati
 |---|---|
 | App | Next.js (TypeScript), one long-running service |
 | Styling (builder UI only) | Tailwind CSS + a small stone/chalk palette |
-| Generation | OpenAI API — Astra for the one-time reference artifact, Sol for everything else (see [`context/DECISIONS.md`](context/DECISIONS.md) for why Sol over Terra) |
+| Generation | OpenAI API — routed per job (§5b) by `src/lib/models/router.ts`: Astra for the one-time reference artifact, Terra for generation (10/10 first-pass Tier 1, measured), Sol for repair/correction escalation and vision, Luna for classification |
 | Verification | Sandboxed `srcdoc` iframe, client-side only |
 | Data | Supabase Postgres (`generations` table) |
 | Files | Supabase Storage (`uploads`, `artifacts` buckets) |
@@ -47,6 +47,14 @@ One config object, keyed by the class number the teacher enters, drives generati
 | Hosting | Render free tier, single service, external uptime pinger |
 
 No state management library, component kit, ORM, or auth provider — a single hardcoded teacher identity, no login.
+
+### Environment
+
+| Variable | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | Generation, repair, correction and vision calls |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Postgres + Storage (service role: `storage.objects` has RLS on and this build defines no policies) |
+| `SLATE_GENERATION_MODEL` | Optional. Overrides the default generation model (§5b). Unset falls back to `gpt-5.6-sol`; deployments should set `gpt-5.6-terra` per the measurement in [`context/DECISIONS.md`](context/DECISIONS.md). Repair, correction escalation and vision are not affected. |
 
 ## What's built vs. what's specified but unbuilt
 
